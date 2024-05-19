@@ -28,6 +28,23 @@ struct GpioProc {
     status: [ReadWrite<u32, GPIO_INTxx::Register>; 4],
 }
 
+#[repr(C)]
+struct SMConf {
+    sm_clkdiv: ReadWrite<u32, PIO_CLKDIV::Register>,
+    sm_execctrl: ReadWrite<u32, PIO_EXEC_CTRL::Register>,
+    sm_shiftctrl: ReadWrite<u32, PIO_SFIFT_CTRL::Register>,
+    sm_addr: ReadWrite<u32, PIO_SM_ADDR::Register>,
+    sm_instr: ReadWrite<u32, PIO_SM_INSTR::Register>,
+    sm_pinctrl: ReadWrite<u32, PIO_SM_PINCTRL::Register>,
+}
+
+#[repr(C)]
+struct PIOInterrupts {
+    irq_inte: ReadWrite<u32, PIO_INTR::Register>,
+    irq_intf: ReadWrite<u32, PIO_INTR::Register>,
+    irq_ints: ReadWrite<u32, PIO_INTR::Register>,
+}
+
 register_structs! {
     /// GPIO Registers.
     GpioRegisters {
@@ -102,6 +119,59 @@ register_structs! {
 
         /// End
         (0x05c => @END),
+    },
+    /// PIO Control Registers
+    PIORegisters { // todo second part of RW<...>
+        /// CTRL
+        (0x000 => ctrl: ReadWrite<u32, PIO_CTRL::Register>),
+
+        /// FSTAT
+        (0x004 => fstat: ReadOnly<u32, PIO_FSTAT::Register>),
+
+        /// FDEBUG
+        (0x008 => fdebug: ReadWrite<u32, PIO_FSTAT::Register>),
+
+        /// FLEVEL
+        (0x00c => flevel: ReadWrite<u32, PIO_FLEVEL::Register>),
+
+        /// TXF
+        (0x010 => txf: [ReadWrite<u32, FIFO_WR::Register>; 4]),
+
+        /// RXF
+        (0x020 => rxf: [ReadWrite<u32, FIFO_RD::Register>; 4]),
+
+        /// IRQ
+        (0x030 => irq: ReadWrite<u32, PIO_IRQ::Register>),
+
+        /// IRQ_FORCE
+        (0x034 => irq_force: ReadWrite<u32, PIO_IRQFORCE::Register>),
+
+        /// INPUT_SYNC_BYPASS
+        (0x038 => input_sync_bypass: ReadWrite<u32, PIO_INPUT_SYNC_BYPASS::Register>),
+
+        /// DBG_PADOUT
+        (0x03c => dbg_padout: ReadWrite<u32, PIO_DBG_PADOUT::Register>),
+
+        /// DBG_PADOE
+        (0x040 => dbg_padoe: ReadWrite<u32, PIO_DBG_PADOE::Register>),
+
+        /// DBG_CFGINFO
+        (0x044 => dbg_cfginfo: ReadWrite<u32, PIO_DBG_CFGINFO::Register>),
+
+        /// INSTR_MEM
+        (0x048 => instr_mem: [ReadWrite<u32, PIO_INSTR_MEM::Register>; 32]),
+
+        // SM
+        (0x0c8 => sm: [SMConf; 4]),
+
+        /// INTR
+        (0x128 => intr: ReadWrite<u32, PIO_SM_PINCTRL::Register>),
+
+        /// IRQ_PIO
+        (0x12c => irqs: [PIOInterrupts; 2]),
+
+        /// End
+        (0x144 => @END),
     }
 }
 
@@ -277,6 +347,118 @@ register_bitfields![u32,
         /// FIFO Read
         VALUE OFFSET(0) NUMBITS(32)
     ],
+    PIO_CTRL [
+        /// CLKDIV restart, set to 1 to restart the clock divider
+        CLKDIV_RESTART OFFSET(8) NUMBITS(4) [],
+        // SM restart, set to 1 to restart the state machine
+        SM_RESTART OFFSET(4) NUMBITS(4) [],
+        // SM enable, set to 1 to enable the state machine
+        SM_ENABLE OFFSET(0) NUMBITS(4) []
+    ],
+    PIO_FSTAT [
+        TXEMPTY OFFSET(24) NUMBITS(4) [],
+        TXFULL OFFSET(16) NUMBITS(4) [],
+        RXEMPTY OFFSET(8) NUMBITS(4) [],
+        RXFULL OFFSET(0) NUMBITS(4) []
+    ],
+    PIO_FDEBUG [
+        TXSTALL OFFSET(24) NUMBITS(4) [],
+        TXOVER OFFSET(16) NUMBITS(4) [],
+        RXUNDER OFFSET(8) NUMBITS(4) [],
+        RXSTALL OFFSET(0) NUMBITS(4) []
+    ],
+    PIO_FLEVEL [
+        RX3 OFFSET(28) NUMBITS(4) [],
+        TX3 OFFSET(24) NUMBITS(4) [],
+        RX2 OFFSET(20) NUMBITS(4) [],
+        TX2 OFFSET(16) NUMBITS(4) [],
+        RX1 OFFSET(12) NUMBITS(4) [],
+        TX1 OFFSET(8) NUMBITS(4) [],
+        RX0 OFFSET(4) NUMBITS(4) [],
+        TX0 OFFSET(0) NUMBITS(4) []
+    ],
+    PIO_IRQ [
+        IRQ OFFSET(0) NUMBITS(8) [],
+    ],
+    PIO_IRQFORCE [
+        IRQ OFFSET(0) NUMBITS(8) [],
+    ],
+    PIO_INPUT_SYNC_BYPASS [
+        BYPASS OFFSET(0) NUMBITS(32) [],
+    ],
+    PIO_DBG_PADOUT [
+        PADOUT OFFSET(0) NUMBITS(32) [],
+    ],
+    PIO_DBG_PADOE [
+        PADOE OFFSET(0) NUMBITS(32) [],
+    ],
+    PIO_DBG_CFGINFO [
+        /// The size of the instruction memory in units of one instruction
+        IMEM_SIZE OFFSET(16) NUMBITS(6) [],
+        /// The number of state machines this PIO instance is equipped with.
+        SM_COUNT OFFSET(8) NUMBITS(4) [],
+        /// The depth of the state machine TX/RX FIFOs in words
+        FIFO_DEPTH OFFSET(0) NUMBITS(6) []
+    ],
+    PIO_INSTR_MEM [
+        INSTR OFFSET(0) NUMBITS(16) []
+    ],
+    PIO_CLKDIV [
+        INT OFFSET(16) NUMBITS(16) [],
+        FRAC OFFSET(8) NUMBITS(8) []
+    ],
+    PIO_EXEC_CTRL [
+        EXEC_STALLED OFFSET(31) NUMBITS(1) [],
+        SIDE_EN OFFSET(30) NUMBITS(1) [],
+        SIDE_PINDIR OFFSET(29) NUMBITS(1) [],
+        JMP_PIN OFFSET(24) NUMBITS(5) [],
+        OUT_EN_SEL OFFSET(19) NUMBITS(5) [],
+        INLINE_OUT_EN OFFSET(18) NUMBITS(1) [],
+        OUT_STICKY OFFSET(17) NUMBITS(1) [],
+        WRAP_TOP OFFSET(12) NUMBITS(5) [],
+        WRAP_BOTTOM OFFSET(7) NUMBITS(5) [],
+        STATUS_SEL OFFSET(4) NUMBITS(1) [],
+        STATUS_N OFFSET(3) NUMBITS(1) [],
+    ],
+    PIO_SFIFT_CTRL [
+        FJOIN_RX OFFSET(31) NUMBITS(1) [],
+        FJOIN_TX OFFSET(30) NUMBITS(1) [],
+        PULL_TRESH OFFSET(25) NUMBITS(5) [],
+        PUSH_THRESH OFFSET(20) NUMBITS(5) [],
+        OUT_SHIFTDIR OFFSET(19) NUMBITS(1) [],
+        IN_SHIFTDIR OFFSET(18) NUMBITS(1) [],
+        AUTOPULL OFFSET(17) NUMBITS(1) [],
+        AUTOPUSH OFFSET(16) NUMBITS(1) []
+    ],
+    PIO_SM_ADDR [
+        INSTR_ADDR OFFSET(0) NUMBITS(4) []
+    ],
+    PIO_SM_INSTR [
+        INSTR OFFSET(0) NUMBITS(16) []
+    ],
+    PIO_SM_PINCTRL [
+        SIDESET_COUNT OFFSET(29) NUMBITS(3) [],
+        SET_COUNT OFFSET(26) NUMBITS(3) [],
+        OUT_COUNT OFFSET(20) NUMBITS(6) [],
+        IN_BASE OFFSET(15) NUMBITS(5) [],
+        SIDESET_BASE OFFSET(10) NUMBITS(5) [],
+        SET_BASE OFFSET(5) NUMBITS(5) [],
+        OUT_BASE OFFSET(0) NUMBITS(5) []
+    ],
+    PIO_INTR [
+        SM3 OFFSET(11) NUMBITS(1) [],
+        SM2 OFFSET(10) NUMBITS(1) [],
+        SM1 OFFSET(9) NUMBITS(1) [],
+        SM0 OFFSET(8) NUMBITS(1) [],
+        SM3_TXNFULL OFFSET(7) NUMBITS(1) [],
+        SM2_TXNFULL OFFSET(6) NUMBITS(1) [],
+        SM1_TXNFULL OFFSET(5) NUMBITS(1) [],
+        SM0_TXNFULL OFFSET(4) NUMBITS(1) [],
+        SM3_RXNEMPTY OFFSET(3) NUMBITS(1) [],
+        SM2_RXNEMPTY OFFSET(2) NUMBITS(1) [],
+        SM1_RXNEMPTY OFFSET(1) NUMBITS(1) [],
+        SM0_RXNEMPTY OFFSET(0) NUMBITS(1) []
+    ],
 ];
 
 const GPIO_BASE_ADDRESS: usize = 0x40014000;
@@ -290,6 +472,13 @@ const GPIO_PAD_BASE: StaticRef<GpioPadRegisters> =
 const SIO_BASE_ADDRESS: usize = 0xd0000000;
 const SIO_BASE: StaticRef<SIORegisters> =
     unsafe { StaticRef::new(SIO_BASE_ADDRESS as *const SIORegisters) };
+
+const PIO0_BASE_ADDRESS: usize = 0x5020_0000; 
+const PIO0_BASE: StaticRef<PIORegisters> =
+    unsafe { StaticRef::new(PIO0_BASE_ADDRESS as *const PIORegisters) };
+const PIO1_BASE_ADDRESS: usize = 0x5030_0000;
+const PIO1_BASE: StaticRef<PIORegisters> =
+    unsafe { StaticRef::new(PIO1_BASE_ADDRESS as *const PIORegisters) };
 
 pub struct RPPins<'a> {
     pub pins: [RPGpioPin<'a>; 30],
@@ -446,6 +635,14 @@ impl<'a> RPGpioPin<'a> {
             (0, 1) => hil::gpio::FloatingState::PullDown,
             (1, 0) => hil::gpio::FloatingState::PullUp,
             _ => panic!("Invalid GPIO floating state."),
+        }
+    }
+
+    pub fn set_schmitt(&self, enable: bool) {
+        if enable {
+            self.gpio_pad_registers.gpio_pad[self.pin].modify(GPIO_PAD::SCHMITT::SET);
+        } else {
+            self.gpio_pad_registers.gpio_pad[self.pin].modify(GPIO_PAD::SCHMITT::CLEAR);
         }
     }
 
