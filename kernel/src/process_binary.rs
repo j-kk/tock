@@ -11,6 +11,8 @@ use core::fmt;
 
 use crate::config;
 use crate::debug;
+use crate::process_checker::AcceptedCredential;
+use crate::utilities::cells::OptionalCell;
 
 /// Errors resulting from trying to load a process binary structure from flash.
 pub enum ProcessBinaryError {
@@ -114,15 +116,20 @@ impl fmt::Debug for ProcessBinaryError {
 pub struct ProcessBinary {
     /// Process flash segment. This is the entire region of nonvolatile flash
     /// that the process occupies.
-    pub(crate) flash: &'static [u8],
+    pub flash: &'static [u8],
 
     /// The footers of the process binary (may be zero-sized), which are metadata
     /// about the process not covered by integrity. Used, among other things, to
     /// store signatures.
-    pub(crate) footers: &'static [u8],
+    pub footers: &'static [u8],
 
     /// Collection of pointers to the TBF header in flash.
-    pub(crate) header: tock_tbf::types::TbfHeader,
+    pub header: tock_tbf::types::TbfHeader,
+
+    /// Optional credential that was used to approve this application. This is
+    /// set if the process is checked by a credential checker and a specific
+    /// credential was used to approve this process. Otherwise this is `None`.
+    pub credential: OptionalCell<AcceptedCredential>,
 }
 
 impl ProcessBinary {
@@ -144,14 +151,12 @@ impl ProcessBinary {
         // If this isn't an app (i.e. it is padding) then we can skip it and do
         // not create a `ProcessBinary` object.
         if !tbf_header.is_app() {
-            if config::CONFIG.debug_load_processes {
-                if !tbf_header.is_app() {
-                    debug!(
-                        "Padding in flash={:#010X}-{:#010X}",
-                        app_flash.as_ptr() as usize,
-                        app_flash.as_ptr() as usize + app_flash.len() - 1
-                    );
-                }
+            if config::CONFIG.debug_load_processes && !tbf_header.is_app() {
+                debug!(
+                    "Padding in flash={:#010X}-{:#010X}",
+                    app_flash.as_ptr() as usize,
+                    app_flash.as_ptr() as usize + app_flash.len() - 1
+                );
             }
             // Return no process and the full memory slice we were given.
             return Err(ProcessBinaryError::Padding);
@@ -197,20 +202,18 @@ impl ProcessBinary {
                     version: Some((major, minor)),
                 });
             }
-        } else {
-            if require_kernel_version {
-                // If enforcing the kernel version is requested, and the
-                // `KernelVersion` header is not present, we prevent the process
-                // from loading.
-                if config::CONFIG.debug_load_processes {
-                    debug!(
-                        "WARN process {} has no kernel version header",
-                        tbf_header.get_package_name().unwrap_or("")
-                    );
-                    debug!("Please upgrade to elf2tab >= 0.8.0");
-                }
-                return Err(ProcessBinaryError::IncompatibleKernelVersion { version: None });
+        } else if require_kernel_version {
+            // If enforcing the kernel version is requested, and the
+            // `KernelVersion` header is not present, we prevent the process
+            // from loading.
+            if config::CONFIG.debug_load_processes {
+                debug!(
+                    "WARN process {} has no kernel version header",
+                    tbf_header.get_package_name().unwrap_or("")
+                );
+                debug!("Please upgrade to elf2tab >= 0.8.0");
             }
+            return Err(ProcessBinaryError::IncompatibleKernelVersion { version: None });
         }
 
         let binary_end = tbf_header.get_binary_end() as usize;
@@ -242,7 +245,12 @@ impl ProcessBinary {
             header: tbf_header,
             footers: footer_region,
             flash: app_flash,
+            credential: OptionalCell::empty(),
         })
+    }
+
+    pub fn get_credential(&self) -> Option<AcceptedCredential> {
+        self.credential.get()
     }
 
     pub(crate) fn get_integrity_region_slice(&self) -> &'static [u8] {

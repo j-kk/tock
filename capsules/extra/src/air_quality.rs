@@ -9,7 +9,7 @@
 //!
 //! You need a device that provides the `hil::sensors::AirQualityDriver` trait.
 //!
-//! ```rust
+//! ```rust,ignore
 //! # use kernel::static_init;
 //!
 //! let grant_cap = create_capability!(capabilities::MemoryAllocationCapability);
@@ -58,7 +58,7 @@ impl<'a> AirQualitySensor<'a> {
         grant: Grant<App, UpcallCount<1>, AllowRoCount<0>, AllowRwCount<0>>,
     ) -> AirQualitySensor<'a> {
         AirQualitySensor {
-            driver: driver,
+            driver,
             apps: grant,
             busy: Cell::new(false),
         }

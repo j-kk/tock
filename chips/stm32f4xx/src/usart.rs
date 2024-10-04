@@ -7,13 +7,14 @@ use kernel::deferred_call::{DeferredCall, DeferredCallClient};
 use kernel::hil;
 use kernel::platform::chip::ClockInterface;
 use kernel::utilities::cells::{OptionalCell, TakeCell};
+use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, ReadWrite};
 use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
 
+use crate::clocks::{phclk, Stm32f4Clocks};
 use crate::dma;
-use crate::rcc;
 
 /// Universal synchronous asynchronous receiver transmitter
 #[repr(C)]
@@ -212,24 +213,24 @@ pub struct TxDMA<'a, DMA: dma::StreamServer<'a>>(pub &'a dma::Stream<'a, DMA>);
 pub struct RxDMA<'a, DMA: dma::StreamServer<'a>>(pub &'a dma::Stream<'a, DMA>);
 
 impl<'a> Usart<'a, dma::Dma1<'a>> {
-    pub fn new_usart2(rcc: &'a rcc::Rcc) -> Self {
+    pub fn new_usart2(clocks: &'a dyn Stm32f4Clocks) -> Self {
         Self::new(
             USART2_BASE,
-            UsartClock(rcc::PeripheralClock::new(
-                rcc::PeripheralClockType::APB1(rcc::PCLK1::USART2),
-                rcc,
+            UsartClock(phclk::PeripheralClock::new(
+                phclk::PeripheralClockType::APB1(phclk::PCLK1::USART2),
+                clocks,
             )),
             dma::Dma1Peripheral::USART2_TX,
             dma::Dma1Peripheral::USART2_RX,
         )
     }
 
-    pub fn new_usart3(rcc: &'a rcc::Rcc) -> Self {
+    pub fn new_usart3(clocks: &'a dyn Stm32f4Clocks) -> Self {
         Self::new(
             USART3_BASE,
-            UsartClock(rcc::PeripheralClock::new(
-                rcc::PeripheralClockType::APB1(rcc::PCLK1::USART3),
-                rcc,
+            UsartClock(phclk::PeripheralClock::new(
+                phclk::PeripheralClockType::APB1(phclk::PCLK1::USART3),
+                clocks,
             )),
             dma::Dma1Peripheral::USART3_TX,
             dma::Dma1Peripheral::USART3_RX,
@@ -238,12 +239,12 @@ impl<'a> Usart<'a, dma::Dma1<'a>> {
 }
 
 impl<'a> Usart<'a, dma::Dma2<'a>> {
-    pub fn new_usart1(rcc: &'a rcc::Rcc) -> Self {
+    pub fn new_usart1(clocks: &'a dyn Stm32f4Clocks) -> Self {
         Self::new(
             USART1_BASE,
-            UsartClock(rcc::PeripheralClock::new(
-                rcc::PeripheralClockType::APB2(rcc::PCLK2::USART1),
-                rcc,
+            UsartClock(phclk::PeripheralClock::new(
+                phclk::PeripheralClockType::APB2(phclk::PCLK2::USART1),
+                clocks,
             )),
             dma::Dma2Peripheral::USART1_TX,
             dma::Dma2Peripheral::USART1_RX,
@@ -260,15 +261,15 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
     ) -> Usart<'a, DMA> {
         Usart {
             registers: base_addr,
-            clock: clock,
+            clock,
 
             tx_client: OptionalCell::empty(),
             rx_client: OptionalCell::empty(),
 
             tx_dma: OptionalCell::empty(),
-            tx_dma_pid: tx_dma_pid,
+            tx_dma_pid,
             rx_dma: OptionalCell::empty(),
-            rx_dma_pid: rx_dma_pid,
+            rx_dma_pid,
 
             tx_len: Cell::new(0),
             rx_len: Cell::new(0),
@@ -324,6 +325,7 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
                 // alert client
                 self.tx_client.map(|client| {
                     buffer.map(|buf| {
+                        let buf = buf.take();
                         client.transmitted_buffer(buf, len, Ok(()));
                     });
                 });
@@ -352,6 +354,7 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
                 // alert client
                 self.rx_client.map(|client| {
                     buffer.map(|buf| {
+                        let buf = buf.take();
                         client.received_buffer(
                             buf,
                             count,
@@ -422,6 +425,7 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
         self.tx_len.set(0);
 
         if let Some(buf) = buffer.take() {
+            let buf = buf.take();
             self.partial_tx_buffer.replace(buf);
             self.partial_tx_len.set(count);
 
@@ -449,6 +453,7 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
         self.rx_len.set(0);
 
         if let Some(buf) = buffer.take() {
+            let buf = buf.take();
             self.partial_rx_buffer.replace(buf);
             self.partial_rx_len.set(count);
 
@@ -493,6 +498,7 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
                 // alert client
                 self.rx_client.map(|client| {
                     buffer.map(|buf| {
+                        let buf = buf.take();
                         client.received_buffer(buf, length, Ok(()), hil::uart::Error::None);
                     });
                 });
@@ -608,7 +614,9 @@ impl<'a, DMA: dma::StreamServer<'a>> hil::uart::Transmit<'a> for Usart<'a, DMA> 
         // setup and enable dma stream
         self.tx_dma.map(move |dma| {
             self.tx_len.set(tx_len);
-            dma.do_transfer(tx_data, tx_len);
+            let mut tx_data: SubSliceMut<u8> = tx_data.into();
+            tx_data.slice(..tx_len);
+            dma.do_transfer(tx_data);
         });
 
         self.usart_tx_state.set(USARTStateTX::DMA_Transmitting);
@@ -687,7 +695,9 @@ impl<'a, DMA: dma::StreamServer<'a>> hil::uart::Receive<'a> for Usart<'a, DMA> {
         // setup and enable dma stream
         self.rx_dma.map(move |dma| {
             self.rx_len.set(rx_len);
-            dma.do_transfer(rx_buffer, rx_len);
+            let mut rx_buffer: SubSliceMut<u8> = rx_buffer.into();
+            rx_buffer.slice(..rx_len);
+            dma.do_transfer(rx_buffer);
         });
 
         self.usart_rx_state.set(USARTStateRX::DMA_Receiving);
@@ -721,7 +731,7 @@ impl<'a> dma::StreamClient<'a, dma::Dma2<'a>> for Usart<'a, dma::Dma2<'a>> {
     }
 }
 
-struct UsartClock<'a>(rcc::PeripheralClock<'a>);
+struct UsartClock<'a>(phclk::PeripheralClock<'a>);
 
 impl ClockInterface for UsartClock<'_> {
     fn is_enabled(&self) -> bool {

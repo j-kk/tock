@@ -11,15 +11,15 @@
 //! Usage
 //! -----
 //!
-//! ```rust
+//! ```rust,ignore
 //! # use kernel::static_init;
 //!
 //! let button_pins = static_init!(
 //!     [&'static sam4l::gpio::GPIOPin; 1],
 //!     [&sam4l::gpio::PA[16]]);
 //! let button = static_init!(
-//!     capsules::button::Button<'static>,
-//!     capsules::button::Button::new(button_pins, board_kernel.create_grant(&grant_cap)));
+//!     capsules_core::button::Button<'static>,
+//!     capsules_core::button::Button::new(button_pins, board_kernel.create_grant(&grant_cap)));
 //! for btn in button_pins.iter() {
 //!     btn.set_client(button);
 //! }
@@ -106,10 +106,7 @@ impl<'a, P: gpio::InterruptPin<'a>> Button<'a, P> {
             pin.set_floating_state(floating_state);
         }
 
-        Self {
-            pins: pins,
-            apps: grant,
-        }
+        Self { pins, apps: grant }
     }
 
     fn get_button_state(&self, pin_num: u32) -> gpio::ActivationState {

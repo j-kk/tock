@@ -37,10 +37,12 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 // Reference to the chip for panic dumps.
 static mut CHIP: Option<&'static e310_g003::chip::E310x<E310G003DefaultPeripherals>> = None;
 // Reference to the process printer for panic dumps.
-static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
+static mut PROCESS_PRINTER: Option<&'static capsules_system::process_printer::ProcessPrinterText> =
+    None;
 
 // How should the kernel respond when a process faults.
-const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
+const FAULT_RESPONSE: capsules_system::process_policies::PanicFaultPolicy =
+    capsules_system::process_policies::PanicFaultPolicy {};
 
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
@@ -125,7 +127,7 @@ unsafe fn start() -> (
     &'static e310_g003::chip::E310x<'static, E310G003DefaultPeripherals<'static>>,
 ) {
     // only machine mode
-    rv32i::configure_trap_handler(rv32i::PermissionMode::Machine);
+    rv32i::configure_trap_handler();
 
     let peripherals = static_init!(
         E310G003DefaultPeripherals,
@@ -278,15 +280,13 @@ unsafe fn start() -> (
         VirtualSchedulerTimer<VirtualMuxAlarm<'static, e310_g003::chip::E310xClint<'static>>>,
         VirtualSchedulerTimer::new(systick_virtual_alarm)
     );
-
     let hifive1 = HiFiveInventor {
-        console: console,
-        alarm: alarm,
-        lldb: lldb,
+        console,
+        lldb,
+        alarm,
         scheduler,
         scheduler_timer,
     };
-
     kernel::process::load_processes(
         board_kernel,
         chip,

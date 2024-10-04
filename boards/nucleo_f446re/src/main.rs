@@ -23,6 +23,8 @@ use kernel::hil::led::LedHigh;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::scheduler::round_robin::RoundRobinSched;
 use kernel::{create_capability, debug, static_init};
+use stm32f446re::chip_specs::Stm32f446Specs;
+use stm32f446re::clocks::hsi::HSI_FREQUENCY_MHZ;
 use stm32f446re::gpio::{AlternateFunction, Mode, PinId, PortId};
 use stm32f446re::interrupt_service::Stm32f446reDefaultPeripherals;
 
@@ -44,10 +46,12 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 static mut CHIP: Option<&'static stm32f446re::chip::Stm32f4xx<Stm32f446reDefaultPeripherals>> =
     None;
 // Static reference to process printer for panic dumps.
-static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
+static mut PROCESS_PRINTER: Option<&'static capsules_system::process_printer::ProcessPrinterText> =
+    None;
 
 // How should the kernel respond when a process faults.
-const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
+const FAULT_RESPONSE: capsules_system::process_policies::PanicFaultPolicy =
+    capsules_system::process_policies::PanicFaultPolicy {};
 
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
@@ -268,20 +272,25 @@ unsafe fn start() -> (
 
     // We use the default HSI 16Mhz clock
     let rcc = static_init!(stm32f446re::rcc::Rcc, stm32f446re::rcc::Rcc::new());
+    let clocks = static_init!(
+        stm32f446re::clocks::Clocks<Stm32f446Specs>,
+        stm32f446re::clocks::Clocks::new(rcc)
+    );
+
     let syscfg = static_init!(
         stm32f446re::syscfg::Syscfg,
-        stm32f446re::syscfg::Syscfg::new(rcc)
+        stm32f446re::syscfg::Syscfg::new(clocks)
     );
     let exti = static_init!(
         stm32f446re::exti::Exti,
         stm32f446re::exti::Exti::new(syscfg)
     );
-    let dma1 = static_init!(stm32f446re::dma::Dma1, stm32f446re::dma::Dma1::new(rcc));
-    let dma2 = static_init!(stm32f446re::dma::Dma2, stm32f446re::dma::Dma2::new(rcc));
+    let dma1 = static_init!(stm32f446re::dma::Dma1, stm32f446re::dma::Dma1::new(clocks));
+    let dma2 = static_init!(stm32f446re::dma::Dma2, stm32f446re::dma::Dma2::new(clocks));
 
     let peripherals = static_init!(
         Stm32f446reDefaultPeripherals,
-        Stm32f446reDefaultPeripherals::new(rcc, exti, dma1, dma2)
+        Stm32f446reDefaultPeripherals::new(clocks, exti, dma1, dma2)
     );
     peripherals.init();
     let base_peripherals = &peripherals.stm32f4;
@@ -484,22 +493,24 @@ unsafe fn start() -> (
         .finalize(components::round_robin_component_static!(NUM_PROCS));
 
     let nucleo_f446re = NucleoF446RE {
-        console: console,
+        console,
         ipc: kernel::ipc::IPC::new(
             board_kernel,
             kernel::ipc::DRIVER_NUM,
             &memory_allocation_capability,
         ),
-        led: led,
-        button: button,
+        led,
+        button,
         adc: adc_syscall,
-        alarm: alarm,
+        alarm,
 
         temperature: temp,
-        gpio: gpio,
+        gpio,
 
         scheduler,
-        systick: cortexm4::systick::SysTick::new(),
+        systick: cortexm4::systick::SysTick::new_with_calibration(
+            (HSI_FREQUENCY_MHZ * 1_000_000) as u32,
+        ),
     };
 
     // // Optional kernel tests

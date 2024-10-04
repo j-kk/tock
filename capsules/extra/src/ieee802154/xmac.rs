@@ -36,7 +36,7 @@
 //! a `kernel::hil::time::Alarm`, and a `kernel::hil::rng::Rng` device, the
 //! necessary modifications to the board configuration are shown below for `imix`s:
 //!
-//! ```rust
+//! ```rust,ignore
 //! # use kernel::static_init;
 //!
 //! // main.rs
@@ -176,9 +176,9 @@ impl<'a, R: radio::Radio<'a>, A: Alarm<'a>> XMac<'a, R, A> {
         mac_buf: &'static mut [u8],
     ) -> XMac<'a, R, A> {
         XMac {
-            radio: radio,
-            alarm: alarm,
-            rng: rng,
+            radio,
+            alarm,
+            rng,
             tx_client: OptionalCell::empty(),
             rx_client: OptionalCell::empty(),
             state: Cell::new(XMacState::STARTUP),

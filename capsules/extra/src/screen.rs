@@ -9,7 +9,7 @@
 //!
 //! You need a screen that provides the `hil::screen::Screen` trait.
 //!
-//! ```rust
+//! ```rust,ignore
 //! let screen =
 //!     components::screen::ScreenComponent::new(board_kernel, tft).finalize();
 //! ```
@@ -49,7 +49,7 @@ fn screen_rotation_from(screen_rotation: usize) -> Option<ScreenRotation> {
 fn screen_pixel_format_from(screen_pixel_format: usize) -> Option<ScreenPixelFormat> {
     match screen_pixel_format {
         0 => Some(ScreenPixelFormat::Mono),
-        1 => Some(ScreenPixelFormat::RGB_233),
+        1 => Some(ScreenPixelFormat::RGB_332),
         2 => Some(ScreenPixelFormat::RGB_565),
         3 => Some(ScreenPixelFormat::RGB_888),
         4 => Some(ScreenPixelFormat::ARGB_8888),
@@ -127,8 +127,8 @@ impl<'a> Screen<'a> {
         grant: Grant<App, UpcallCount<1>, AllowRoCount<{ ro_allow::COUNT }>, AllowRwCount<0>>,
     ) -> Screen<'a> {
         Screen {
-            screen: screen,
-            screen_setup: screen_setup,
+            screen,
+            screen_setup,
             apps: grant,
             current_process: OptionalCell::empty(),
             pixel_format: Cell::new(screen.get_pixel_format()),

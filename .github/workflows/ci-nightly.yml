@@ -19,6 +19,9 @@ permissions:
 
 jobs:
   ci-build:
+    # Do not run job on forks
+    if: github.repository == 'tock/tock'
+
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -43,6 +46,9 @@ jobs:
           path: tools/ci-artifacts
 
   ci-tests:
+    # Do not run job on forks
+    if: github.repository == 'tock/tock'
+
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -73,16 +79,16 @@ jobs:
       - name: ci-job-tools
         run: make ci-job-tools
       - name: Create Issue on Failed workflow
-          if: ${{ failure() }}
-          uses: dacbd/create-issue-action@main
-          with:
-            token: ${{ github.token }}
-            title: Nightly CI failed
-            body: |
-              ### Context
-              [Failed Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-              [Codebase](https://github.com/${{ github.repository }}/tree/${{ github.sha }})
-              Workflow name - `${{ github.workflow }}`
-              Job -           `${{ github.job }}`
-              status -        `${{ job.status }}`
-            assignees: @tock/core-wg
+        if: failure()
+        uses: dacbd/create-issue-action@main
+        with:
+          token: ${{ github.token }}
+          title: Nightly CI failed
+          body: |
+            ### Context
+            [Failed Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            [Codebase](https://github.com/${{ github.repository }}/tree/${{ github.sha }})
+            Workflow name - `${{ github.workflow }}`
+            Job -           `${{ github.job }}`
+            status -        `${{ job.status }}`
+          assignees: tock/core-wg

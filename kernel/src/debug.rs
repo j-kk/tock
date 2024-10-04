@@ -124,7 +124,7 @@ pub unsafe fn panic_print<W: Write + IoWrite, C: Chip, PP: ProcessPrinter>(
 
     // Some systems may enforce memory protection regions for the
     // kernel, making application memory inaccessible. However,
-    // priting process information will attempt to access memory. If
+    // printing process information will attempt to access memory. If
     // we are provided a chip reference, attempt to disable userspace
     // memory protection first:
     chip.map(|c| {
@@ -137,6 +137,9 @@ pub unsafe fn panic_print<W: Write + IoWrite, C: Chip, PP: ProcessPrinter>(
 /// Tock default panic routine.
 ///
 /// **NOTE:** The supplied `writer` must be synchronous.
+///
+/// This will print a detailed debugging message and then loop forever while
+/// blinking an LED in a recognizable pattern.
 pub unsafe fn panic<L: hil::led::Led, W: Write + IoWrite, C: Chip, PP: ProcessPrinter>(
     leds: &mut [&L],
     writer: &mut W,
@@ -205,8 +208,8 @@ pub unsafe fn panic_process_info<PP: ProcessPrinter, W: Write>(
     process_printer.map(|printer| {
         // print data about each process
         let _ = writer.write_fmt(format_args!("\r\n---| App Status |---\r\n"));
-        for idx in 0..procs.len() {
-            procs[idx].map(|process| {
+        for proc in procs {
+            proc.map(|process| {
                 // Print the memory map and basic process info.
                 //
                 // Because we are using a synchronous printer we do not need to
@@ -221,14 +224,18 @@ pub unsafe fn panic_process_info<PP: ProcessPrinter, W: Write>(
 
 /// Blinks a recognizable pattern forever.
 ///
-/// If a multi-color LED is used for the panic pattern, it is
-/// advised to turn off other LEDs before calling this method.
+/// The LED will blink "sporadically" in a somewhat irregular pattern. This
+/// should look different from a traditional blinking LED which typically blinks
+/// with a consistent duty cycle. The panic blinking sequence is intentionally
+/// unusual to make it easier to tell when a panic has occurred.
 ///
-/// Generally, boards should blink red during panic if possible,
-/// otherwise choose the 'first' or most prominent LED. Some
-/// boards may find it appropriate to blink multiple LEDs (e.g.
-/// one on the top and one on the bottom), thus this method
-/// accepts an array, however most will only need one.
+/// If a multi-color LED is used for the panic pattern, it is advised to turn
+/// off other LEDs before calling this method.
+///
+/// Generally, boards should blink red during panic if possible, otherwise
+/// choose the 'first' or most prominent LED. Some boards may find it
+/// appropriate to blink multiple LEDs (e.g. one on the top and one on the
+/// bottom), thus this method accepts an array, however most will only need one.
 pub fn panic_blink_forever<L: hil::led::Led>(leds: &mut [&L]) -> ! {
     leds.iter_mut().for_each(|led| led.init());
     loop {
@@ -341,14 +348,14 @@ pub fn debug_enqueue_fmt(args: Arguments) {
 pub fn debug_flush_queue_() {
     let writer = unsafe { get_debug_writer() };
 
-    unsafe { DEBUG_QUEUE.as_deref_mut() }.map(|buffer| {
+    if let Some(buffer) = unsafe { DEBUG_QUEUE.as_deref_mut() } {
         buffer.dw.map(|dw| {
             dw.ring_buffer.map(|ring_buffer| {
                 writer.write_ring_buffer(ring_buffer);
                 ring_buffer.empty();
             });
         });
-    });
+    }
 }
 
 /// This macro prints a new line to an internal ring buffer, the contents of
@@ -429,7 +436,7 @@ impl DebugWriter {
         internal_buffer: &'static mut RingBuffer<'static, u8>,
     ) -> DebugWriter {
         DebugWriter {
-            uart: uart,
+            uart,
             output_buffer: TakeCell::new(out_buffer),
             internal_buffer: TakeCell::new(internal_buffer),
             count: Cell::new(0), // how many debug! calls
@@ -709,16 +716,6 @@ macro_rules! debug_expr {
 
 pub trait Debug {
     fn write(&self, buf: &'static mut [u8], len: usize) -> usize;
-}
-
-#[cfg(debug = "true")]
-impl Default for Debug {
-    fn write(&self, buf: &'static mut [u8], len: usize) {
-        panic!(
-            "No registered kernel debug printer. Thrown printing {:?}",
-            buf
-        );
-    }
 }
 
 pub unsafe fn flush<W: Write + IoWrite>(writer: &mut W) {

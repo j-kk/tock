@@ -24,7 +24,7 @@ use crate::types;
 /// we can skip over it and check for the next app.
 /// - Err(InitialTbfParseError::InvalidHeader(app_length))
 pub fn parse_tbf_header_lengths(
-    app: &'static [u8; 8],
+    app: &[u8; 8],
 ) -> Result<(u16, u16, u32), types::InitialTbfParseError> {
     // Version is the first 16 bits of the app TBF contents. We need this to
     // correctly parse the other lengths.
@@ -128,6 +128,7 @@ pub fn parse_tbf_header(
                 let mut permissions_pointer: Option<&'static [u8]> = None;
                 let mut storage_permissions_pointer: Option<&'static [u8]> = None;
                 let mut kernel_version: Option<types::TbfHeaderV2KernelVersion> = None;
+                let mut short_id: Option<types::TbfHeaderV2ShortId> = None;
 
                 // Iterate the remainder of the header looking for TLV entries.
                 while remaining.len() > 0 {
@@ -256,6 +257,22 @@ pub fn parse_tbf_header(
                             }
                         }
 
+                        types::TbfHeaderTypes::TbfHeaderShortId => {
+                            let entry_len = mem::size_of::<types::TbfHeaderV2ShortId>();
+                            if tlv_header.length as usize == entry_len {
+                                short_id = Some(
+                                    remaining
+                                        .get(0..entry_len)
+                                        .ok_or(types::TbfParseError::NotEnoughFlash)?
+                                        .try_into()?,
+                                );
+                            } else {
+                                return Err(types::TbfParseError::BadTlvEntry(
+                                    tlv_header.tipe as usize,
+                                ));
+                            }
+                        }
+
                         _ => {}
                     }
 
@@ -278,7 +295,8 @@ pub fn parse_tbf_header(
                     fixed_addresses: fixed_address_pointer,
                     permissions: permissions_pointer,
                     storage_permissions: storage_permissions_pointer,
-                    kernel_version: kernel_version,
+                    kernel_version,
+                    short_id,
                 };
 
                 Ok(types::TbfHeader::TbfHeaderV2(tbf_header))

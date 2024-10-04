@@ -12,13 +12,13 @@ pub struct Stm32f446reDefaultPeripherals<'a> {
 
 impl<'a> Stm32f446reDefaultPeripherals<'a> {
     pub unsafe fn new(
-        rcc: &'a crate::rcc::Rcc,
+        clocks: &'a crate::clocks::Clocks<'a, Stm32f446Specs>,
         exti: &'a crate::exti::Exti<'a>,
         dma1: &'a crate::dma::Dma1<'a>,
         dma2: &'a crate::dma::Dma2<'a>,
     ) -> Self {
         Self {
-            stm32f4: Stm32f4xxDefaultPeripherals::new(rcc, exti, dma1, dma2),
+            stm32f4: Stm32f4xxDefaultPeripherals::new(clocks, exti, dma1, dma2),
         }
     }
     // Necessary for setting up circular dependencies & registering deferred
@@ -29,6 +29,7 @@ impl<'a> Stm32f446reDefaultPeripherals<'a> {
 }
 impl<'a> kernel::platform::chip::InterruptService for Stm32f446reDefaultPeripherals<'a> {
     unsafe fn service_interrupt(&self, interrupt: u32) -> bool {
+        #[allow(clippy::match_single_binding)]
         match interrupt {
             // put Stm32f446re specific interrupts here
             _ => self.stm32f4.service_interrupt(interrupt),

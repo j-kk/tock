@@ -8,26 +8,23 @@
 #![crate_type = "rlib"]
 #![no_std]
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-use core::arch::global_asm;
-
 // These constants are defined in the linker script.
 extern "C" {
     static _estack: u8;
     static _sstack: u8;
 }
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
 extern "C" {
     /// ARMv7-M systick handler function.
     ///
     /// For documentation of this function, please see
-    /// [`CortexMVariant::SYSTICK_HANDLER`].
+    /// `CortexMVariant::SYSTICK_HANDLER`.
     pub fn systick_handler_arm_v7m();
 }
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-global_asm!(
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
+core::arch::global_asm!(
     "
     .section .systick_handler_arm_v7m, \"ax\"
     .global systick_handler_arm_v7m
@@ -58,17 +55,17 @@ global_asm!(
     "
 );
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
 extern "C" {
     /// Handler of `svc` instructions on ARMv7-M.
     ///
     /// For documentation of this function, please see
-    /// [`CortexMVariant::SVC_HANDLER`].
+    /// `CortexMVariant::SVC_HANDLER`.
     pub fn svc_handler_arm_v7m();
 }
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-global_asm!(
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
+core::arch::global_asm!(
     "
     .section .svc_handler_arm_v7m, \"ax\"
     .global svc_handler_arm_v7m
@@ -136,15 +133,15 @@ global_asm!(
     "
 );
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
 extern "C" {
     /// Generic interrupt handler for ARMv7-M instruction sets.
     ///
-    /// For documentation of this function, see [`CortexMVariant::GENERIC_ISR`].
+    /// For documentation of this function, see `CortexMVariant::GENERIC_ISR`.
     pub fn generic_isr_arm_v7m();
 }
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-global_asm!(
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
+core::arch::global_asm!(
         "
     .section .generic_isr_arm_v7m, \"ax\"
     .global generic_isr_arm_v7m
@@ -219,8 +216,8 @@ global_asm!(
 /// state.
 ///
 /// For documentation of this function, please see
-/// [`CortexMVariant::switch_to_user`].
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+/// `CortexMVariant::switch_to_user`.
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
 pub unsafe fn switch_to_user_arm_v7m(
     mut user_stack: *const usize,
     process_regs: &mut [usize; 8],
@@ -281,7 +278,7 @@ pub unsafe fn switch_to_user_arm_v7m(
     user_stack
 }
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
 /// Continue the hardfault handler for all hard-faults that occurred
 /// during kernel execution. This function must never return.
 unsafe extern "C" fn hard_fault_handler_arm_v7m_kernel(
@@ -434,22 +431,22 @@ unsafe extern "C" fn hard_fault_handler_arm_v7m_kernel(
     }
 }
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
 extern "C" {
     /// ARMv7-M hardfault handler.
     ///
     /// For documentation of this function, please see
-    /// [`CortexMVariant::HARD_FAULT_HANDLER_HANDLER`].
+    /// `CortexMVariant::HARD_FAULT_HANDLER_HANDLER`.
     pub fn hard_fault_handler_arm_v7m();
 }
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(any(doc, all(target_arch = "arm", target_os = "none")))]
 // First need to determine if this a kernel fault or a userspace fault, and store
 // the unmodified stack pointer. Place these values in registers, then call
 // a non-naked function, to allow for use of rust code alongside inline asm.
 // Because calling a function increases the stack pointer, we have to check for a kernel
 // stack overflow and adjust the stack pointer before we branch
-global_asm!(
+core::arch::global_asm!(
     "
         .section .hard_fault_handler_arm_v7m, \"ax\"
         .global hard_fault_handler_arm_v7m
@@ -556,22 +553,22 @@ pub fn ipsr_isr_number_to_str(isr_number: usize) -> &'static str {
 // ARM assembly since it will not compile.
 ///////////////////////////////////////////////////////////////////
 
-#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+#[cfg(not(any(doc, all(target_arch = "arm", target_os = "none"))))]
 pub unsafe extern "C" fn systick_handler_arm_v7m() {
     unimplemented!()
 }
 
-#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+#[cfg(not(any(doc, all(target_arch = "arm", target_os = "none"))))]
 pub unsafe extern "C" fn svc_handler_arm_v7m() {
     unimplemented!()
 }
 
-#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+#[cfg(not(any(doc, all(target_arch = "arm", target_os = "none"))))]
 pub unsafe extern "C" fn generic_isr_arm_v7m() {
     unimplemented!()
 }
 
-#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+#[cfg(not(any(doc, all(target_arch = "arm", target_os = "none"))))]
 pub unsafe extern "C" fn switch_to_user_arm_v7m(
     _user_stack: *const u8,
     _process_regs: &mut [usize; 8],
@@ -579,7 +576,7 @@ pub unsafe extern "C" fn switch_to_user_arm_v7m(
     unimplemented!()
 }
 
-#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+#[cfg(not(any(doc, all(target_arch = "arm", target_os = "none"))))]
 pub unsafe extern "C" fn hard_fault_handler_arm_v7m() {
     unimplemented!()
 }

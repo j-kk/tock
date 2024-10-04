@@ -24,13 +24,16 @@ use crate::platform::chip::Chip;
 use crate::platform::mpu::{self, MPU};
 use crate::process::BinaryVersion;
 use crate::process::ProcessBinary;
-use crate::process::{Error, FunctionCall, FunctionCallSource, Process, State, Task};
+use crate::process::{Error, FunctionCall, FunctionCallSource, Process, Task};
 use crate::process::{FaultAction, ProcessCustomGrantIdentifier, ProcessId};
 use crate::process::{ProcessAddresses, ProcessSizes, ShortId};
+use crate::process::{State, StoppedState};
+use crate::process_checker::AcceptedCredential;
 use crate::process_loading::ProcessLoadError;
 use crate::process_policies::ProcessFaultPolicy;
+use crate::process_policies::ProcessStandardStoragePermissionsPolicy;
 use crate::processbuffer::{ReadOnlyProcessBuffer, ReadWriteProcessBuffer};
-use crate::storage_permissions;
+use crate::storage_permissions::StoragePermissions;
 use crate::syscall::{self, Syscall, SyscallReturn, UserspaceKernelBoundary};
 use crate::upcall::UpcallId;
 use crate::utilities::cells::{MapCell, NumericCellExt, OptionalCell};
@@ -185,6 +188,10 @@ pub struct ProcessStandard<'a, C: 'static + Chip> {
     /// Collection of pointers to the TBF header in flash.
     header: tock_tbf::types::TbfHeader,
 
+    /// Credential that was approved for this process, or `None` if the
+    /// credential was permitted to run without an accepted credential.
+    credential: Option<AcceptedCredential>,
+
     /// State saved on behalf of the process each time the app switches to the
     /// kernel.
     stored_state:
@@ -203,6 +210,9 @@ pub struct ProcessStandard<'a, C: 'static + Chip> {
 
     /// How to respond if this process faults.
     fault_policy: &'a dyn ProcessFaultPolicy,
+
+    /// Storage permissions for this process.
+    storage_permissions: StoragePermissions,
 
     /// Configuration data for the MPU
     mpu_config: MapCell<<<C as Chip>::MPU as MPU>::MpuConfig>,
@@ -229,9 +239,6 @@ pub struct ProcessStandard<'a, C: 'static + Chip> {
     /// be stored as `Some(completion code)`.
     completion_code: OptionalCell<Option<u32>>,
 
-    /// Name of the app.
-    process_name: &'static str,
-
     /// Values kept so that we can print useful debug messages when apps fault.
     debug: MapCell<ProcessStandardDebug>,
 }
@@ -246,14 +253,15 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
     }
 
     fn binary_version(&self) -> Option<BinaryVersion> {
-        match self.header.get_binary_version() {
-            0 => None,
-            // Safety: because of the previous arm, version != 0, so the call to
-            // NonZeroU32::new_unchecked() is safe
-            version => Some(BinaryVersion::new(unsafe {
-                NonZeroU32::new_unchecked(version)
-            })),
+        let version = self.header.get_binary_version();
+        match NonZeroU32::new(version) {
+            Some(version_nonzero) => Some(BinaryVersion::new(version_nonzero)),
+            None => None,
         }
+    }
+
+    fn get_credential(&self) -> Option<AcceptedCredential> {
+        self.credential
     }
 
     fn enqueue_task(&self, task: Task) -> Result<(), ErrorCode> {
@@ -320,7 +328,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
 
     fn is_running(&self) -> bool {
         match self.state.get() {
-            State::Running | State::Yielded | State::StoppedRunning | State::StoppedYielded => true,
+            State::Running | State::Yielded | State::YieldedFor(_) | State::Stopped(_) => true,
             _ => false,
         }
     }
@@ -335,18 +343,35 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         }
     }
 
+    fn set_yielded_for_state(&self, upcall_id: UpcallId) {
+        if self.state.get() == State::Running {
+            self.state.set(State::YieldedFor(upcall_id));
+        }
+    }
+
     fn stop(&self) {
         match self.state.get() {
-            State::Running => self.state.set(State::StoppedRunning),
-            State::Yielded => self.state.set(State::StoppedYielded),
-            _ => {} // Do nothing
+            State::Running => self.state.set(State::Stopped(StoppedState::Running)),
+            State::Yielded => self.state.set(State::Stopped(StoppedState::Yielded)),
+            State::YieldedFor(upcall_id) => self
+                .state
+                .set(State::Stopped(StoppedState::YieldedFor(upcall_id))),
+            State::Stopped(_stopped_state) => {
+                // Already stopped, nothing to do.
+            }
+            State::Faulted | State::Terminated => {
+                // Stop has no meaning on a inactive process.
+            }
         }
     }
 
     fn resume(&self) {
         match self.state.get() {
-            State::StoppedRunning => self.state.set(State::Running),
-            State::StoppedYielded => self.state.set(State::Yielded),
+            State::Stopped(stopped_state) => match stopped_state {
+                StoppedState::Running => self.state.set(State::Running),
+                StoppedState::Yielded => self.state.set(State::Yielded),
+                StoppedState::YieldedFor(upcall_id) => self.state.set(State::YieldedFor(upcall_id)),
+            },
             _ => {} // Do nothing
         }
     }
@@ -359,7 +384,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
             FaultAction::Panic => {
                 // process faulted. Panic and print status
                 self.state.set(State::Faulted);
-                panic!("Process {} had a fault", self.process_name);
+                panic!("Process {} had a fault", self.get_process_name());
             }
             FaultAction::Restart => {
                 self.try_restart(None);
@@ -449,6 +474,19 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         self.tasks.map_or(None, |tasks| tasks.dequeue())
     }
 
+    fn remove_upcall(&self, upcall_id: UpcallId) -> Option<Task> {
+        self.tasks.map_or(None, |tasks| {
+            tasks.remove_first_matching(|task| match task {
+                Task::FunctionCall(fc) => match fc.source {
+                    FunctionCallSource::Driver(upid) => upid == upcall_id,
+                    _ => false,
+                },
+                Task::ReturnValue(rv) => rv.upcall_id == upcall_id,
+                Task::IPC(_) => false,
+            })
+        })
+    }
+
     fn pending_tasks(&self) -> usize {
         self.tasks.map_or(0, |tasks| tasks.len())
     }
@@ -457,21 +495,8 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         self.header.get_command_permissions(driver_num, offset)
     }
 
-    fn get_storage_permissions(&self) -> Option<storage_permissions::StoragePermissions> {
-        let (read_count, read_ids) = self.header.get_storage_read_ids().unwrap_or((0, [0; 8]));
-
-        let (modify_count, modify_ids) =
-            self.header.get_storage_modify_ids().unwrap_or((0, [0; 8]));
-
-        let write_id = self.header.get_storage_write_id();
-
-        Some(storage_permissions::StoragePermissions::new(
-            read_count,
-            read_ids,
-            modify_count,
-            modify_ids,
-            write_id,
-        ))
+    fn get_storage_permissions(&self) -> StoragePermissions {
+        self.storage_permissions
     }
 
     fn number_writeable_flash_regions(&self) -> usize {
@@ -755,7 +780,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
             // panic.
             grant_pointers
                 .get(grant_num)
-                .map_or(None, |grant_entry| Some(!grant_entry.grant_ptr.is_null()))
+                .map(|grant_entry| !grant_entry.grant_ptr.is_null())
         })
     }
 
@@ -914,17 +939,14 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         self.grant_pointers.map(|grant_pointers| {
             // Implement `grant_pointers[grant_num]` without a chance of a
             // panic.
-            match grant_pointers.get_mut(grant_num) {
-                Some(grant_entry) => {
-                    // Get a copy of the actual grant pointer.
-                    let grant_ptr = grant_entry.grant_ptr;
+            if let Some(grant_entry) = grant_pointers.get_mut(grant_num) {
+                // Get a copy of the actual grant pointer.
+                let grant_ptr = grant_entry.grant_ptr;
 
-                    // Now, to mark that the grant has been released, we set the
-                    // lowest bit back to zero and save this as the grant
-                    // pointer.
-                    grant_entry.grant_ptr = (grant_ptr as usize & !0x1) as *mut u8;
-                }
-                None => {}
+                // Now, to mark that the grant has been released, we set the
+                // lowest bit back to zero and save this as the grant
+                // pointer.
+                grant_entry.grant_ptr = (grant_ptr as usize & !0x1) as *mut u8;
             }
         });
     }
@@ -971,7 +993,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
     }
 
     fn get_process_name(&self) -> &'static str {
-        self.process_name
+        self.header.get_package_name().unwrap_or("")
     }
 
     fn get_completion_code(&self) -> Option<Option<u32>> {
@@ -997,6 +1019,13 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         }) {
             Some(Ok(())) => {
                 // If we get an `Ok` we are all set.
+
+                // The process is either already in the running state (having
+                // just called a nonblocking syscall like command) or needs to
+                // be moved to the running state having called Yield-WaitFor and
+                // now needing to be resumed. Either way we can set the state to
+                // running.
+                self.state.set(State::Running);
             }
 
             Some(Err(())) => {
@@ -1083,7 +1112,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
 
         // If the UKB implementation passed us a stack pointer, update our
         // debugging state. This is completely optional.
-        stack_pointer.map(|sp| {
+        if let Some(sp) = stack_pointer {
             self.debug.map(|debug| {
                 match debug.app_stack_min_pointer {
                     None => debug.app_stack_min_pointer = Some(sp),
@@ -1095,7 +1124,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
                     }
                 }
             });
-        });
+        }
 
         switch_reason
     }
@@ -1281,6 +1310,7 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         pb: ProcessBinary,
         remaining_memory: &'a mut [u8],
         fault_policy: &'static dyn ProcessFaultPolicy,
+        storage_permissions_policy: &'static dyn ProcessStandardStoragePermissionsPolicy<C>,
         app_id: ShortId,
         index: usize,
     ) -> Result<(Option<&'static dyn Process>, &'a mut [u8]), (ProcessLoadError, &'a mut [u8])>
@@ -1639,6 +1669,7 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         process.app_break = Cell::new(initial_app_brk);
         process.grant_pointers = MapCell::new(grant_pointers);
 
+        process.credential = pb.credential.get();
         process.footers = pb.footers;
         process.flash = pb.flash;
 
@@ -1659,11 +1690,10 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
             Cell::new(None),
         ];
         process.tasks = MapCell::new(tasks);
-        process.process_name = process_name.unwrap_or("");
 
         process.debug = MapCell::new(ProcessStandardDebug {
-            fixed_address_flash: fixed_address_flash,
-            fixed_address_ram: fixed_address_ram,
+            fixed_address_flash,
+            fixed_address_ram,
             app_heap_start_pointer: None,
             app_stack_start_pointer: None,
             app_stack_min_pointer: None,
@@ -1722,6 +1752,11 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
                 argument3: process.app_break.get() as usize,
             }));
         });
+
+        // Set storage permissions. Put this at the end so that `process` is
+        // completely formed before using it to determine the storage
+        // permissions.
+        process.storage_permissions = storage_permissions_policy.get_permissions(process);
 
         // Return the process object and a remaining memory for processes slice.
         Ok((Some(process), unused_memory))
@@ -2001,6 +2036,33 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         // Subtract the offset in the identifier from the end of the process
         // memory to get the address of the custom grant.
         process_memory_end - identifier.offset
+    }
+
+    /// Return the app's read and modify storage permissions from the TBF header
+    /// if it exists.
+    ///
+    /// If the header does not exist then return `None`. If the header does
+    /// exist, this returns a 5-tuple with:
+    ///
+    /// - `write_allowed`: bool. If this process should have write permissions.
+    /// - `read_count`: usize. How many read IDs are valid.
+    /// - `read_ids`: [u32]. The read IDs.
+    /// - `modify_count`: usze. How many modify IDs are valid.
+    /// - `modify_ids`: [u32]. The modify IDs.
+    pub fn get_tbf_storage_permissions(&self) -> Option<(bool, usize, [u32; 8], usize, [u32; 8])> {
+        let read_perms = self.header.get_storage_read_ids();
+        let modify_perms = self.header.get_storage_modify_ids();
+
+        match (read_perms, modify_perms) {
+            (Some((read_count, read_ids)), Some((modify_count, modify_ids))) => Some((
+                self.header.get_storage_write_id().is_some(),
+                read_count,
+                read_ids,
+                modify_count,
+                modify_ids,
+            )),
+            _ => None,
+        }
     }
 
     /// The start address of allocated RAM for this process.

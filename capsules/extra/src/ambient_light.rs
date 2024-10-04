@@ -6,7 +6,7 @@
 //!
 //! You need a device that provides the `hil::sensors::AmbientLight` trait.
 //!
-//! ```rust
+//! ```rust,ignore
 //! # use kernel::{hil, static_init};
 //!
 //! let light = static_init!(
@@ -56,7 +56,7 @@ impl<'a> AmbientLight<'a> {
         grant: Grant<App, UpcallCount<{ upcall::COUNT }>, AllowRoCount<0>, AllowRwCount<0>>,
     ) -> AmbientLight {
         AmbientLight {
-            sensor: sensor,
+            sensor,
             command_pending: Cell::new(false),
             apps: grant,
         }

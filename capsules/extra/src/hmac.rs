@@ -7,7 +7,7 @@
 //! Usage
 //! -----
 //!
-//! ```rust
+//! ```rust,ignore
 //! let hmac = &earlgrey::hmac::HMAC;
 //!
 //! let mux_hmac = static_init!(MuxHmac<'static, lowrisc::hmac::Hmac>, MuxHmac::new(hmac));
@@ -106,7 +106,7 @@ impl<
         >,
     ) -> HmacDriver<'a, H, L> {
         HmacDriver {
-            hmac: hmac,
+            hmac,
             active: Cell::new(false),
             apps: grant,
             processid: OptionalCell::empty(),

@@ -17,6 +17,7 @@ use core::ptr::addr_of_mut;
 
 use kernel::capabilities;
 use kernel::component::Component;
+use kernel::hil;
 use kernel::hil::gpio::Configure;
 use kernel::hil::gpio::Output;
 use kernel::hil::led::LedHigh;
@@ -71,8 +72,8 @@ pub mod io;
 
 // How should the kernel respond when a process faults. For this board we choose
 // to stop the app and print a notice, but not immediately panic.
-const FAULT_RESPONSE: kernel::process::StopWithDebugFaultPolicy =
-    kernel::process::StopWithDebugFaultPolicy {};
+const FAULT_RESPONSE: capsules_system::process_policies::StopWithDebugFaultPolicy =
+    capsules_system::process_policies::StopWithDebugFaultPolicy {};
 
 // Number of concurrent processes this platform supports.
 const NUM_PROCS: usize = 8;
@@ -82,7 +83,8 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
     [None; NUM_PROCS];
 
 static mut CHIP: Option<&'static nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>> = None;
-static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
+static mut PROCESS_PRINTER: Option<&'static capsules_system::process_printer::ProcessPrinterText> =
+    None;
 
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
@@ -371,7 +373,9 @@ pub unsafe fn start() -> (
     let lr1110_spi = components::spi::SpiSyscallComponent::new(
         board_kernel,
         mux_spi,
-        &nrf52840_peripherals.gpio_port[SPI_CS_PIN],
+        hil::spi::cs::IntoChipSelect::<_, hil::spi::cs::ActiveLow>::into_cs(
+            &nrf52840_peripherals.gpio_port[SPI_CS_PIN],
+        ),
         LORA_SPI_DRIVER_NUM,
     )
     .finalize(components::spi_syscall_component_static!(
@@ -386,7 +390,11 @@ pub unsafe fn start() -> (
 
     base_peripherals
         .spim0
-        .specify_chip_select(&nrf52840_peripherals.gpio_port[SPI_CS_PIN])
+        .specify_chip_select(
+            hil::spi::cs::IntoChipSelect::<_, hil::spi::cs::ActiveLow>::into_cs(
+                &nrf52840_peripherals.gpio_port[SPI_CS_PIN],
+            ),
+        )
         .unwrap();
 
     // Pin mappings from the original WM1110 source code.
@@ -474,8 +482,8 @@ pub unsafe fn start() -> (
         ),
         scheduler,
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
-        temperature: temperature,
-        humidity: humidity,
+        temperature,
+        humidity,
         lr1110_spi,
         lr1110_gpio,
     };

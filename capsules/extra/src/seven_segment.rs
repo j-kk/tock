@@ -17,7 +17,7 @@
 //! Microbit Pins: <https://tech.microbit.org/hardware/schematic/>
 //! 4 digit 7 segment display pinout: <https://www.dotnetlovers.com/images/4digit7segmentdisplay85202024001AM.jpg>
 //!
-//! ```rust
+//! ```rust,ignore
 //! const NUM_DIGITS: usize = 4;
 //! const DIGITS: [Pin; 4] = [Pin::P1_02, Pin::P0_12, Pin::P0_30, Pin::P0_09]; // [D1, D2, D3, D4]
 //! const SEGMENTS: [Pin; 7] = [
@@ -224,8 +224,8 @@ impl<'a, P: Pin, A: Alarm<'a>, const NUM_DIGITS: usize> SevenSegmentDriver<'a, P
             digits,
             buffer: TakeCell::new(buffer),
             alarm,
-            segment_activation: segment_activation,
-            digit_activation: digit_activation,
+            segment_activation,
+            digit_activation,
             current_digit: Cell::new(0),
             timing: (1000 / (refresh_rate * digits.len())) as u8,
         }

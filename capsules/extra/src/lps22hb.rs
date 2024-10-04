@@ -23,7 +23,7 @@
 //! Usage
 //! -----
 //!
-//! ```rust
+//! ```rust,ignore
 //! # use kernel::static_init;
 //!
 //! let lps22hb_i2c = static_init!(
@@ -90,7 +90,7 @@ impl<'a, I: I2CDevice> Lps22hb<'a, I> {
     pub fn new(i2c_bus: &'a I, buffer: &'static mut [u8]) -> Lps22hb<'a, I> {
         Lps22hb {
             buffer: TakeCell::new(buffer),
-            i2c_bus: i2c_bus,
+            i2c_bus,
             pressure_client: OptionalCell::empty(),
             pending_pressure: Cell::new(false),
             state: Cell::new(State::Sleep),

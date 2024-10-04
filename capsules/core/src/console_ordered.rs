@@ -40,7 +40,7 @@
 //! reasonable. ATOMIC_SIZE should be at least 80 (row width
 //! of a standard console).
 //!
-//! ```rust
+//! ```rust,ignore
 //! # use kernel::static_init;
 //! # use capsules_core::console_ordered::ConsoleOrdered;
 //! let console = static_init!(
@@ -162,11 +162,11 @@ impl<'a, A: Alarm<'a>> ConsoleOrdered<'a, A> {
         write_timer: u32,
     ) -> ConsoleOrdered<'a, A> {
         ConsoleOrdered {
-            uart: uart,
+            uart,
             apps: grant,
             tx_in_progress: Cell::new(false),
             tx_counter: Cell::new(0),
-            alarm: alarm,
+            alarm,
 
             rx_counter: Cell::new(0),
             rx_in_progress: OptionalCell::empty(),

@@ -98,8 +98,8 @@ enum_from_primitive! {
 
 /// Creates a GPIO ID
 ///
-/// Low 6 bits are the GPIO offset; the '17' in GPIO2[17]
-/// Next 3 bits are the GPIO port; the '2' in GPIO2[17] (base 0 index, 2 -> 1)
+/// Low 6 bits are the GPIO offset; the '17' in `GPIO2[17]`
+/// Next 3 bits are the GPIO port; the '2' in `GPIO2[17]` (base 0 index, 2 -> 1)
 const fn gpio_id(port: GpioPort, offset: u16) -> u16 {
     ((port as u16) << 6) | offset & 0x3F
 }
@@ -555,7 +555,7 @@ pub struct Pin<'a> {
 trait U32Ext {
     fn set_bit(self, offset: usize) -> Self;
     fn clear_bit(self, offset: usize) -> Self;
-    fn is_bit_set(self, offset: usize) -> bool;
+    fn is_bit_set(&self, offset: usize) -> bool;
 }
 
 impl U32Ext for u32 {
@@ -568,7 +568,7 @@ impl U32Ext for u32 {
         self & !(1 << offset)
     }
     #[inline(always)]
-    fn is_bit_set(self, offset: usize) -> bool {
+    fn is_bit_set(&self, offset: usize) -> bool {
         (self & (1 << offset)) != 0
     }
 }

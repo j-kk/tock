@@ -67,7 +67,7 @@
 //! You need a device that provides the `kernel::BleAdvertisementDriver` trait along with a virtual
 //! timer to perform events and not block the entire kernel
 //!
-//! ```rust
+//! ```rust,ignore
 //! # use kernel::static_init;
 //! # use capsules::virtual_alarm::VirtualMuxAlarm;
 //!
@@ -358,11 +358,11 @@ where
         alarm: &'a A,
     ) -> BLE<'a, B, A> {
         BLE {
-            radio: radio,
+            radio,
             busy: Cell::new(false),
             app: container,
             kernel_tx: kernel::utilities::cells::TakeCell::new(tx_buf),
-            alarm: alarm,
+            alarm,
             sending_app: OptionalCell::empty(),
             receiving_app: OptionalCell::empty(),
         }

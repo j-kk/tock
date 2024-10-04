@@ -10,7 +10,7 @@
 //! This capsule interfaces with flash and exposes the Tock `tickv::kv_system`
 //! interface to others.
 //!
-//! ```
+//! ```text
 //! +-----------------------+
 //! |  Capsule using K-V    |
 //! +-----------------------+
@@ -241,7 +241,6 @@ impl<'a, F: Flash, const PAGE_SIZE: usize> tickv::flash_controller::FlashControl
     fn read_region(
         &self,
         region_number: usize,
-        _offset: usize,
         _buf: &mut [u8; PAGE_SIZE],
     ) -> Result<(), tickv::error_codes::ErrorCode> {
         if self

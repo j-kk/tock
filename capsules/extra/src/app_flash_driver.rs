@@ -16,7 +16,7 @@
 //! Usage
 //! -----
 //!
-//! ```
+//! ```rust,ignore
 //! # use kernel::static_init;
 //!
 //! let app_flash_buffer = static_init!([u8; 512], [0; 512]);
@@ -85,7 +85,7 @@ impl<'a> AppFlash<'a> {
         buffer: &'static mut [u8],
     ) -> AppFlash<'a> {
         AppFlash {
-            driver: driver,
+            driver,
             apps: grant,
             current_app: OptionalCell::empty(),
             buffer: TakeCell::new(buffer),

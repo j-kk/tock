@@ -47,10 +47,12 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 // Static reference to chip for panic dumps.
 static mut CHIP: Option<&'static apollo3::chip::Apollo3<Apollo3DefaultPeripherals>> = None;
 // Static reference to process printer for panic dumps.
-static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
+static mut PROCESS_PRINTER: Option<&'static capsules_system::process_printer::ProcessPrinterText> =
+    None;
 
 // How should the kernel respond when a process faults.
-const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
+const FAULT_RESPONSE: capsules_system::process_policies::PanicFaultPolicy =
+    capsules_system::process_policies::PanicFaultPolicy {};
 
 // Test access to the peripherals
 #[cfg(test)]
@@ -94,6 +96,13 @@ struct RedboardArtemisAtp {
             apollo3::ios::Ios<'static>,
         >,
     >,
+    spi_controller: &'static capsules_core::spi_controller::Spi<
+        'static,
+        capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+            'static,
+            apollo3::iom::Iom<'static>,
+        >,
+    >,
     ble_radio: &'static capsules_extra::ble_advertising_driver::BLE<
         'static,
         apollo3::ble::Ble<'static>,
@@ -115,6 +124,7 @@ impl SyscallDriverLookup for RedboardArtemisAtp {
             capsules_core::gpio::DRIVER_NUM => f(Some(self.gpio)),
             capsules_core::console::DRIVER_NUM => f(Some(self.console)),
             capsules_core::i2c_master_slave_driver::DRIVER_NUM => f(Some(self.i2c_master_slave)),
+            capsules_core::spi_controller::DRIVER_NUM => f(Some(self.spi_controller)),
             capsules_extra::ble_advertising_driver::DRIVER_NUM => f(Some(self.ble_radio)),
             _ => f(None),
         }
@@ -183,6 +193,8 @@ unsafe fn setup() -> (
     pwr_ctrl.enable_iom4();
     pwr_ctrl.enable_ios();
 
+    peripherals.init();
+
     // Enable PinCfg
     peripherals
         .gpio_port
@@ -195,6 +207,12 @@ unsafe fn setup() -> (
     peripherals
         .gpio_port
         .enable_i2c_slave(&peripherals.gpio_port[1], &peripherals.gpio_port[0]);
+    // Enable Main SPI
+    peripherals.gpio_port.enable_spi(
+        &peripherals.gpio_port[5],
+        &peripherals.gpio_port[7],
+        &peripherals.gpio_port[6],
+    );
 
     // Configure kernel debug gpios as early as possible
     kernel::debug::assign_gpios(
@@ -231,11 +249,8 @@ unsafe fn setup() -> (
         capsules_core::gpio::DRIVER_NUM,
         components::gpio_component_helper!(
             apollo3::gpio::GpioPin,
-            0 => &peripherals.gpio_port[13],  // A0
-            1 => &peripherals.gpio_port[33],  // A1
-            2 => &peripherals.gpio_port[11],  // A2
-            3 => &peripherals.gpio_port[29],  // A3
-            5 => &peripherals.gpio_port[31]  // A5
+            0 => &peripherals.gpio_port[2],  // D2
+            1 => &peripherals.gpio_port[8],  // D8
         ),
     )
     .finalize(components::gpio_component_static!(apollo3::gpio::GpioPin));
@@ -300,6 +315,26 @@ unsafe fn setup() -> (
 
     peripherals.iom4.enable();
 
+    // Init the SPI controller
+    let mux_spi = components::spi::SpiMuxComponent::new(&peripherals.iom0).finalize(
+        components::spi_mux_component_static!(apollo3::iom::Iom<'static>),
+    );
+
+    // The IOM0 expects an auto chip select on pin D11 or D15
+    // We already use manual CS control for other Apollo3 boards, so
+    // let's use A13 as it's broken out next to the SPI ports
+    let spi_controller = components::spi::SpiSyscallComponent::new(
+        board_kernel,
+        mux_spi,
+        kernel::hil::spi::cs::IntoChipSelect::<_, kernel::hil::spi::cs::ActiveLow>::into_cs(
+            &peripherals.gpio_port[13], // A13
+        ),
+        capsules_core::spi_controller::DRIVER_NUM,
+    )
+    .finalize(components::spi_syscall_component_static!(
+        apollo3::iom::Iom<'static>
+    ));
+
     // Setup BLE
     mcu_ctrl.enable_ble();
     clkgen.enable_ble();
@@ -349,6 +384,7 @@ unsafe fn setup() -> (
             gpio,
             console,
             i2c_master_slave,
+            spi_controller,
             ble_radio,
             scheduler,
             systick,

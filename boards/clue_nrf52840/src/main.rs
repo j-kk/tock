@@ -19,6 +19,7 @@ use capsules_core::virtualizers::virtual_aes_ccm::MuxAES128CCM;
 
 use kernel::capabilities;
 use kernel::component::Component;
+use kernel::hil;
 use kernel::hil::buzzer::Buzzer;
 use kernel::hil::i2c::I2CMaster;
 use kernel::hil::led::LedHigh;
@@ -103,8 +104,8 @@ pub mod io;
 
 // State for loading and holding applications.
 // How should the kernel respond when a process faults.
-const FAULT_RESPONSE: kernel::process::StopWithDebugFaultPolicy =
-    kernel::process::StopWithDebugFaultPolicy {};
+const FAULT_RESPONSE: capsules_system::process_policies::StopWithDebugFaultPolicy =
+    capsules_system::process_policies::StopWithDebugFaultPolicy {};
 
 // Number of concurrent processes this platform supports.
 const NUM_PROCS: usize = 8;
@@ -113,7 +114,8 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
     [None; NUM_PROCS];
 
 static mut CHIP: Option<&'static nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>> = None;
-static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
+static mut PROCESS_PRINTER: Option<&'static capsules_system::process_printer::ProcessPrinterText> =
+    None;
 static mut CDC_REF_FOR_PANIC: Option<
     &'static capsules_extra::usb::cdc::CdcAcm<
         'static,
@@ -651,7 +653,9 @@ unsafe fn start() -> (
 
     let bus = components::bus::SpiMasterBusComponent::new(
         spi_mux,
-        &nrf52840_peripherals.gpio_port[ST7789H2_CS],
+        hil::spi::cs::IntoChipSelect::<_, hil::spi::cs::ActiveLow>::into_cs(
+            &nrf52840_peripherals.gpio_port[ST7789H2_CS],
+        ),
         20_000_000,
         kernel::hil::spi::ClockPhase::SampleLeading,
         kernel::hil::spi::ClockPolarity::IdleLow,
@@ -758,25 +762,25 @@ unsafe fn start() -> (
         .finalize(components::round_robin_component_static!(NUM_PROCS));
 
     let platform = Platform {
-        ble_radio: ble_radio,
-        ieee802154_radio: ieee802154_radio,
-        console: console,
-        proximity: proximity,
-        led: led,
-        gpio: gpio,
+        ble_radio,
+        ieee802154_radio,
+        console,
+        proximity,
+        led,
+        gpio,
         adc: adc_syscall,
-        screen: screen,
-        button: button,
-        rng: rng,
-        buzzer: buzzer,
-        alarm: alarm,
+        screen,
+        button,
+        rng,
+        buzzer,
+        alarm,
         ipc: kernel::ipc::IPC::new(
             board_kernel,
             kernel::ipc::DRIVER_NUM,
             &memory_allocation_capability,
         ),
-        temperature: temperature,
-        humidity: humidity,
+        temperature,
+        humidity,
         scheduler,
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
     };

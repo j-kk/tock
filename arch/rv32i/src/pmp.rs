@@ -205,7 +205,7 @@ impl TORRegionSpec {
 /// Helper method to check if a [`PMPUserMPUConfig`] region overlaps with a
 /// region specified by `other_start` and `other_size`.
 ///
-/// Matching the RISC-V spec this checks pmpaddr[i-i] <= y < pmpaddr[i] for TOR
+/// Matching the RISC-V spec this checks `pmpaddr[i-i] <= y < pmpaddr[i]` for TOR
 /// ranges.
 fn region_overlaps(
     region: &(TORUserPMPCFG, *const u8, *const u8),
@@ -873,6 +873,7 @@ impl<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'static> kernel::pla
     }
 }
 
+#[cfg(test)]
 pub mod test {
     use super::{TORUserPMP, TORUserPMPCFG};
 
@@ -1069,8 +1070,7 @@ pub mod test {
                 }
                 None => {
                     panic!(
-                        "Failed to allocate region that does not overlap and \
-                         should meet alignment constraints: {:?}",
+                        "Failed to allocate region that does not overlap and should meet alignment constraints: {:?}",
                         region
                     );
                 }

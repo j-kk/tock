@@ -46,7 +46,7 @@ const N_ENDPOINTS: usize = 2;
 /// This is a combination of:
 ///     - the CTAP spec, example 8
 ///     - USB HID spec examples
-/// Plus it matches: https://chromium.googlesource.com/chromiumos/platform2/+/master/u2fd/u2fhid.cc
+/// Plus it matches: <https://chromium.googlesource.com/chromiumos/platform2/+/master/u2fd/u2fhid.cc>
 static REPORT_DESCRIPTOR: &[u8] = &[
     0x06, 0xD0, 0xF1, // HID_UsagePage ( FIDO_USAGE_PAGE ),
     0x09, 0x01, // HID_Usage ( FIDO_USAGE_CTAPHID ),
@@ -144,8 +144,8 @@ impl<'a, U: hil::usb::UsbController<'a>> CtapHid<'a, U> {
         let (device_descriptor_buffer, other_descriptor_buffer) =
             descriptors::create_descriptor_buffers(
                 descriptors::DeviceDescriptor {
-                    vendor_id: vendor_id,
-                    product_id: product_id,
+                    vendor_id,
+                    product_id,
                     manufacturer_string: 1,
                     product_string: 2,
                     serial_number_string: 3,
@@ -153,9 +153,7 @@ impl<'a, U: hil::usb::UsbController<'a>> CtapHid<'a, U> {
                     max_packet_size_ep0: MAX_CTRL_PACKET_SIZE,
                     ..descriptors::DeviceDescriptor::default()
                 },
-                descriptors::ConfigurationDescriptor {
-                    ..descriptors::ConfigurationDescriptor::default()
-                },
+                descriptors::ConfigurationDescriptor::default(),
                 interfaces,
                 endpoints,
                 Some(&HID_DESCRIPTOR),

@@ -227,9 +227,13 @@ SECTIONS
      * This section is put into the "prog" memory, which is reserved for
      * applications. This section is not used for the kernel, but including it
      * in the .elf file allows for concatenating application binaries with the
-     * kernel.
+     * kernel. By default the loader will not include this section in the
+     * flashed binary. For boards that wish to use this section, it can be set
+     * to load with `objcopy` similar to:
+     *
+     *     arm-none-eabi-objcopy --set-section-flags .apps=LOAD <elf>
      */
-    .apps :
+    .apps (NOLOAD) :
     {
         /* _sapps symbol used by Tock to look for first application. */
         . = ALIGN(4);
@@ -265,7 +269,7 @@ SECTIONS
      * Tock assumes the relocation section follows all static elements and will
      * copy (_erelocate - _srelocate) bytes from _etext to _srelocate.
      */
-    .relocate :
+    .relocate : AT (_etext)
     {
         . = ALIGN(4);
         _srelocate = .;
@@ -294,7 +298,7 @@ SECTIONS
 
         . = ALIGN(4);
         _erelocate = .;
-    } > ram AT>rom
+    } > ram
 
 
     .sram (NOLOAD) :

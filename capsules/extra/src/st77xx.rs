@@ -14,7 +14,7 @@
 //!
 //! SPI example
 //!
-//! ```rust
+//! ```rust,ignore
 //! let tft = components::st77xx::ST77XXComponent::new(mux_alarm,
 //!                                                    bus,
 //!                                                    Some(&nrf52840::gpio::PORT[GPIO_D3]),
@@ -247,11 +247,11 @@ impl<'a, A: Alarm<'a>, B: Bus<'a>, P: Pin> ST77XX<'a, A, B, P> {
         dc.map(|dc| dc.make_output());
         reset.map(|reset| reset.make_output());
         ST77XX {
-            alarm: alarm,
+            alarm,
 
-            dc: dc,
-            reset: reset,
-            bus: bus,
+            dc,
+            reset,
+            bus,
 
             status: Cell::new(Status::Idle),
             width: Cell::new(screen.default_width),
@@ -273,7 +273,7 @@ impl<'a, A: Alarm<'a>, B: Bus<'a>, P: Pin> ST77XX<'a, A, B, P> {
 
             current_rotation: Cell::new(ScreenRotation::Normal),
 
-            screen: screen,
+            screen,
         }
     }
 

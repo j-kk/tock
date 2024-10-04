@@ -40,10 +40,12 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 // Reference to the chip for panic dumps.
 static mut CHIP: Option<&'static e310_g002::chip::E310x<E310G002DefaultPeripherals>> = None;
 // Reference to the process printer for panic dumps.
-static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
+static mut PROCESS_PRINTER: Option<&'static capsules_system::process_printer::ProcessPrinterText> =
+    None;
 
 // How should the kernel respond when a process faults.
-const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
+const FAULT_RESPONSE: capsules_system::process_policies::PanicFaultPolicy =
+    capsules_system::process_policies::PanicFaultPolicy {};
 
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
@@ -124,14 +126,17 @@ impl KernelResources<e310_g002::chip::E310x<'static, E310G002DefaultPeripherals<
     }
 }
 
-/// Main function.
-///
-/// This function is called from the arch crate after some very basic RISC-V
-/// setup and RAM initialization.
-#[no_mangle]
-pub unsafe fn main() {
+/// This is in a separate, inline(never) function so that its stack frame is
+/// removed when this function returns. Otherwise, the stack space used for
+/// these static_inits is wasted.
+#[inline(never)]
+unsafe fn start() -> (
+    &'static kernel::Kernel,
+    RedV,
+    &'static e310_g002::chip::E310x<'static, E310G002DefaultPeripherals<'static>>,
+) {
     // only machine mode
-    rv32i::configure_trap_handler(rv32i::PermissionMode::Machine);
+    rv32i::configure_trap_handler();
 
     let peripherals = static_init!(
         E310G002DefaultPeripherals,
@@ -156,8 +161,6 @@ pub unsafe fn main() {
         .e310x
         .prci
         .set_clock_frequency(sifive::prci::ClockFrequency::Freq16Mhz);
-
-    let main_loop_cap = create_capability!(capabilities::MainLoopCapability);
 
     let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(&*addr_of!(PROCESSES)));
 
@@ -298,10 +301,10 @@ pub unsafe fn main() {
     );
 
     let redv = RedV {
-        console: console,
-        alarm: alarm,
-        lldb: lldb,
         led,
+        console,
+        lldb,
+        alarm,
         scheduler,
         scheduler_timer,
     };
@@ -326,10 +329,19 @@ pub unsafe fn main() {
         debug!("{:?}", err);
     });
 
+    (board_kernel, redv, chip)
+}
+
+/// Main function called after RAM initialized.
+#[no_mangle]
+pub unsafe fn main() {
+    let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
+
+    let (board_kernel, platform, chip) = start();
     board_kernel.kernel_loop(
-        &redv,
+        &platform,
         chip,
         None::<&kernel::ipc::IPC<{ NUM_PROCS as u8 }>>,
-        &main_loop_cap,
+        &main_loop_capability,
     );
 }

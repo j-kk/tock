@@ -52,8 +52,11 @@ usage:
 	@echo "             doc: Builds Tock documentation for all boards"
 	@echo "           stack: Prints a basic stack frame analysis for all boards"
 	@echo "           clean: Clean all builds"
-	@echo "          format: Runs the rustfmt tool on all kernel sources"
+	@echo "    format-check: Checks for formatting errors in kernel sources"
 	@echo "            list: Lists available boards"
+	@echo
+	@echo "We also define the following aliases:"
+	@echo "          format: cargo fmt"
 	@echo
 	@echo "The make system also drives all continuous integration and testing:"
 	@echo "         $$(tput bold)prepush$$(tput sgr0): Fast checks to run before pushing changes upstream"
@@ -175,14 +178,15 @@ clean:
 	@echo "$$(tput bold)Clean ci-artifacts" && rm -rf tools/ci-artifacts
 
 .PHONY: fmt format
-fmt format: tools/.format_fresh
-	$(call banner,Formatting complete)
+fmt format:
+	$(call banner,Running \"cargo fmt\" -- for a complete format check run \"make format-check\")
+	cargo fmt
 
-# Get a list of all rust source files (everything fmt operates on)
-$(eval RUST_FILES_IN_TREE := $(shell (git ls-files | grep '\.rs$$') || find . -type f -name '*.rs'))
-tools/.format_fresh: $(RUST_FILES_IN_TREE)
-	@./tools/run_cargo_fmt.sh $(TOCK_FORMAT_MODE)
-	@touch tools/.format_fresh
+.PHONY: format-check
+format-check:
+	$(call banner,Formatting checker)
+	@./tools/check_format.sh
+	$(call banner,Check for formatting complete)
 
 .PHONY: list
 list:
@@ -215,7 +219,7 @@ ci-nosetup:
 # This is designed for developers, to be run often and before submitting code upstream.
 .PHONY: prepush
 prepush:\
-	format\
+	format-check\
 	ci-job-clippy\
 	ci-job-syntax\
 	licensecheck
@@ -350,9 +354,8 @@ ci-runner-netlify:\
 
 ### ci-runner-github-format jobs:
 .PHONY: ci-job-format
-ci-job-format: licensecheck
-	$(call banner,CI-Job: Format Check)
-	@NOWARNINGS=true TOCK_FORMAT_MODE=diff $(MAKE) format
+ci-job-format: licensecheck format-check
+	$(call banner,CI-Job: Format Check DONE)
 
 define ci_setup_markdown_toc
 	$(call banner,CI-Setup: Install markdown-toc)
@@ -393,7 +396,11 @@ ci-job-readme-check:
 .PHONY: ci-job-clippy
 ci-job-clippy:
 	$(call banner,CI-Job: Clippy)
-	@NOWARNINGS=true ./tools/run_clippy.sh
+	@cargo clippy -- -D warnings
+	# Run `cargo clippy` in select boards so we run clippy with targets that
+	# actually check the arch-specific functions.
+	@cd boards/nordic/nrf52840dk && cargo clippy -- -D warnings
+	@cd boards/hifive1 && cargo clippy -- -D warnings
 
 
 
@@ -465,7 +472,9 @@ ci-job-kernel:
 ci-job-capsules:
 	$(call banner,CI-Job: Capsules)
 	@# Capsule initialization depends on board/chip specific imports, so ignore doc tests
-	@cd capsules && NOWARNINGS=true RUSTFLAGS="-D warnings" TOCK_KERNEL_VERSION=ci_test cargo test --lib --examples
+	@cd capsules/core && NOWARNINGS=true RUSTFLAGS="-D warnings" TOCK_KERNEL_VERSION=ci_test cargo test
+	@cd capsules/extra && NOWARNINGS=true RUSTFLAGS="-D warnings" TOCK_KERNEL_VERSION=ci_test cargo test
+	@cd capsules/system && NOWARNINGS=true RUSTFLAGS="-D warnings" TOCK_KERNEL_VERSION=ci_test cargo test
 
 .PHONY: ci-job-chips
 ci-job-chips:
@@ -524,7 +533,9 @@ ci-job-miri:
 	@#cd libraries/tock-register-interface && NOWARNINGS=true cargo miri test
 	@cd kernel && NOWARNINGS=true cargo miri test
 	@for a in $$(tools/list_archs.sh); do cd arch/$$a && NOWARNINGS=true cargo miri test && cd ../..; done
-	@cd capsules && NOWARNINGS=true cargo miri test
+	@cd capsules/core && NOWARNINGS=true cargo miri test
+	@cd capsules/extra && NOWARNINGS=true cargo miri test
+	@cd capsules/system && NOWARNINGS=true cargo miri test
 	@for c in $$(tools/list_chips.sh); do cd chips/$$c && NOWARNINGS=true cargo miri test && cd ../..; done
 
 
@@ -532,6 +543,10 @@ ci-job-miri:
 ci-job-cargo-test-build:
 	@$(MAKE) NO_RUN="--no-run" -C "boards/opentitan/earlgrey-cw310" test
 	@$(MAKE) NO_RUN="--no-run" -C "boards/esp32-c3-devkitM-1" test
+	@$(MAKE) NO_RUN="--no-run" -C "boards/apollo3/lora_things_plus" test
+	@$(MAKE) NO_RUN="--no-run" -C "boards/apollo3/lora_things_plus" test-atecc508a
+	@$(MAKE) NO_RUN="--no-run" -C "boards/apollo3/redboard_artemis_atp" test
+	@$(MAKE) NO_RUN="--no-run" -C "boards/apollo3/redboard_artemis_nano" test
 
 
 

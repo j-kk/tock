@@ -10,7 +10,7 @@
 //! Boards should create an array of `AppScreenRegion` objects that assign apps
 //! to specific regions (frames) within the screen.
 //!
-//! ```
+//! ```rust,ignore
 //! AppScreenRegion {
 //!     app_id: kernel::process:ShortId::new(id),
 //!     frame: Frame {
@@ -134,7 +134,7 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenShared<'a, S> {
         apps_regions: &'a [AppScreenRegion],
     ) -> ScreenShared<'a, S> {
         ScreenShared {
-            screen: screen,
+            screen,
             apps: grant,
             current_process: OptionalCell::empty(),
             buffer: TakeCell::new(buffer),
@@ -222,9 +222,8 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenShared<'a, S> {
                                 absolute_frame.width,
                                 absolute_frame.height,
                             )
-                            .map_err(|e| {
+                            .inspect_err(|_| {
                                 app.command = None;
-                                e
                             })
                     }
                     Some(ScreenCommand::WriteBuffer) => {
