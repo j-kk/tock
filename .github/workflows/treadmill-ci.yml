@@ -18,6 +18,7 @@
 # [3]: https://book.treadmill.ci/user-guide/github-actions-integration.html
 
 name: treadmill-ci
+
 env:
   TERM: xterm # Makes tput work in actions output
 
@@ -29,190 +30,149 @@ on:
   push:
     branches:
       - master
+      # Add any additional branches you want to include
+      # - dev/test_ci_branch
+
   # Pull requests from forks will not have access to the required GitHub API
   # secrets below, even if they are using an appropriate deployment environment
   # and the workflow runs have been approved according to this environment's
   # rules. We don't know whether this is a bug on GitHub's end or deliberate.
+  #
   # Either way, for now we disable this workflow to run on PRs until we have
   # an API proxy that securely performs these GitHub API calls (adding runners
   # and starting Treadmill jobs with those runner registration tokens), which
   # allows this workflow to run without access to repository secrets.
-  #pull_request:
+  #
+  # However, because GitHub's merge queues don't allow to differentiate required
+  # checks for *entering* the merge queue from those that are required to *pass*
+  # it, we also can't disable this trigger entirely. Instead, we use a selector
+  # to avoid running any actual checks on this trigger, while still technically
+  # succeeding for PRs.
+  pull_request:
+
   merge_group: # Run CI for the GitHub merge queue
+
+  # Manually dispatch for a specific branch (will require approval
+  # through the treadmill-ci-merged environment:
+  workflow_dispatch:
+    inputs:
+      tock-kernel-ref:
+        description: 'Ref (revision/branch/tag) of the upstream Tock repo to test'
+        required: true
+        default: 'master'
+      libtock-c-ref:
+        description: 'Ref (revision/branch/tag) of the upstream libtock-c repo to test'
+        required: true
+        default: 'master'
+      tests-json:
+        description: 'tests-json value passed to HWCI workflow (if empty, output from hwci-determine-tests step is used)'
+        required: false
 
 permissions:
   contents: read
 
 jobs:
-  test-prepare:
+  hwci-determine-tests:
     runs-on: ubuntu-latest
 
-    # Do not run job on forks
-    if: github.repository == 'tock/tock'
-
-    # This provides access to the secrets required below:
-    # - for `treadmill-ci`: after approval by certain persons or GH teams
-    # - for `treadmill-ci-merged`: without approval, on merge queue branches
-    #   and the master branch
-    #
-    # KEEP IN SYNC WITH `on:` EVENTS ABOVE:
-    environment: ${{ github.event_name == 'pull_request' && 'treadmill-ci' || 'treadmill-ci-merged' }}
+    # Don't run on a pull request, as explained above.
+    if: github.event_name != 'pull_request'
 
     outputs:
-      tml-job-ids: ${{ steps.treadmill-job-launch.outputs.tml-job-ids }}
-      tml-jobs: ${{ steps.treadmill-job-launch.outputs.tml-jobs }}
+      hwci-tests-json: ${{ steps.determine-tests.outputs.hwci-tests-json }}
 
     steps:
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Checkout Treadmill repository
+      - name: Checkout the tock/tock repository
         uses: actions/checkout@v4
         with:
-          repository: treadmill-tb/treadmill
-          # treadmill-tb/treadmill main as of Oct 1, 2024, 3:05 PM EDT
-          ref: 'c82f4d7ebddd17f8275ba52139e64e04623f30cb'
-          path: treadmill
+          # Checkout the repository at the commit that triggered the workflow
+          repository: tock/tock
+          ref: ${{ github.sha }}
+          path: tock-tock
 
-      - name: Cache Treadmill CLI compilation artifacts
-        id: cache-tml-cli
-        uses: actions/cache@v4
+      - name: Checkout the tock-hardware-ci repository
+        uses: actions/checkout@v4
         with:
-          path: treadmill/target
-          key: ${{ runner.os }}-tml-cli
+          repository: tock/tock-hardware-ci
+          # Change this in accordance with the two other `tock-hardware-ci` refs
+          # referenced below in the reusable workflow's parameters:
+          ref: 'main'
+          path: tock-hardware-ci
 
-      - name: Compile the Treadmill CLI binary
+      - name: Analyze changes to determine relevant tests
+        id: determine-tests
         run: |
-          pushd treadmill
-          cargo build --package tml-cli
-          popd
-          echo "$PWD/treadmill/target/debug" >> "$GITHUB_PATH"
+          # Ensure Python dependencies are installed
+          python3 -m pip install --user --upgrade pip
 
-      # - uses: actions/checkout@v4
-      #   with:
-      #     path: tock
+          # Run the select_tests.py script
+          python3 tock-hardware-ci/hwci/select_tests.py \
+            --repo-path tock-tock \
+            --hwci-path tock-hardware-ci/hwci \
+            --output selected_tests.json
 
-      # - name: Analyze changes and determine types of tests to run
-      #   run: |
-      #     echo "TODO: implement this!"
+          echo "Selected HWCI tests:"
+          cat selected_tests.json
 
-      - name: Generate a token to register new just-in-time runners
-        id: generate-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ vars.TREADMILL_GH_APP_CLIENT_ID }}
-          private-key: ${{ secrets.TREADMILL_GH_APP_PRIVATE_KEY }}
+          # Output the tests JSON
+          hwci_tests_json=$(cat selected_tests.json | jq -c '.')
+          echo "hwci-tests-json=${hwci_tests_json}" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub just-in-time runners and enqueue Treadmill jobs
-        id: treadmill-job-launch
-        env:
-          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
-          TML_API_TOKEN: ${{ secrets.TREADMILL_API_TOKEN }}
+  hwci-treadmill-dispatch:
+    needs: [hwci-determine-tests]
 
-          # Currently, all tests run only on hosts attached to an nRF52840DK
-          DUT_BOARD: nrf52840dk
+    # This checks whether there is at least one test to run, see
+    # https://github.com/orgs/community/discussions/27125#discussioncomment-3254720
+    #
+    # Don't run on a pull request, as explained above.
+    if: github.event_name != 'pull_request' && (fromJSON(needs.hwci-determine-tests.outputs.hwci-tests-json)[0] != null || github.event_name == 'workflow_dispatch')
 
-          # A Raspberry Pi OS netboot (NBD) image with a GitHub Actions
-          # self-hosted runner pre-configured.
-          #
-          # For the available images see
-          # https://book.treadmill.ci/treadmillci-deployment/images.html
-          IMAGE_ID: 5f4b61324c27472b5354cd11229a0936320148cd6e852fbf05e1b7ff5b4598e6
+    # The main tock-hardware-ci workflow is imported from another repository. It
+    # can be reused across multiple Tock repositories such as the kernel,
+    # libtock-c, and libtock-rs.
+    uses: tock/tock-hardware-ci/.github/workflows/treadmill-ci.yml@main
 
-          # Limit the supervisors to hosts that are compatible with this
-          # image. This is a hack until we introduce "image sets" which define
-          # multiple images for various supervisor hosts, but otherwise behave
-          # identically:
-          HOST_TYPE: nbd-netboot
-          HOST_ARCH: arm64
-        run: |
-          # When we eventually launch tests on multiple hardware platforms in
-          # parallel, we need to supply different SUB_TEST_IDs here:
-          SUB_TEST_ID="0"
+    with:
+      # Only run on a specific repository, as others will not have the right
+      # environments set up and secrets configured. Forks may want to change
+      # this parameter.
+      repository-filter: 'tock/tock'
 
-          # This runner ID uniquely identifies the GitHub Actions runner we're
-          # registering and allows us to launch test-execute jobs on this exact
-          # runner (connected to the exact board we want to run tests on).
-          RUNNER_ID="tml-gh-actions-runner-${GITHUB_REPOSITORY_ID}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${SUB_TEST_ID}"
+      # Provide access to the required Treadmill secrets by running in the
+      # appropriate environment (depending on the `on:` triggers above)
+      job-environment: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && 'treadmill-ci' || 'treadmill-ci-merged' }}
 
-          # Obtain a new just-in-time runner registration token:
-          RUNNER_CONFIG_JSON="$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            /repos/${{ github.repository }}/actions/runners/generate-jitconfig \
-            -f "name=$RUNNER_ID" \
-            -F "runner_group_id=1" \
-            -f "labels[]=$RUNNER_ID" \
-            -f "work_folder=_work")"
-          echo "Generated configuration for runner $(echo "$RUNNER_CONFIG_JSON" | jq -r '.runner.name')"
+      # Reference for tock-hardware-ci repo, change if you want a specific test
+      # suite. In this case, you should also update the branch reference in the
+      # "uses" line above.
+      tock-hardware-ci-ref: 'main'
 
-          # Generate a set of job paramters that includes the GitHub runner
-          # registration token and a script that shuts down the host once the
-          # runner has run through successfully:
-          TML_JOB_PARAMETERS="{\
-            \"gh-actions-runner-encoded-jit-config\": {\
-              \"secret\": true, \
-              \"value\": \"$(echo "$RUNNER_CONFIG_JSON" | jq -r '.encoded_jit_config')\" \
-            }, \
-            \"gh-actions-runner-exec-stop-post-sh\": {\
-              \"secret\": false, \
-              \"value\": \"if [ \\\"\$SERVICE_RESULT\\\" = \\\"success\\\" ]; then tml-puppet job terminate; fi\" \
-            }\
-          }"
+      # Test the tock kernel revision that triggered this workflow:
+      tock-kernel-ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tock-kernel-ref || github.sha }}
 
-          echo "Enqueueing treadmill job:"
-          TML_JOB_ID_JSON="$(tml job enqueue \
-            "$IMAGE_ID" \
-            --tag-config "board:$DUT_BOARD;host-type:$HOST_TYPE;host-arch:$HOST_ARCH" \
-            --parameters "$TML_JOB_PARAMETERS" \
-          )"
+      # Use the latest upstream libtock-c library:
+      libtock-c-ref: ${{ github.event_name == 'workflow_dispatch' && inputs.libtock-c-ref || 'master' }}
 
-          TML_JOB_ID="$(echo "$TML_JOB_ID_JSON" | jq -r .job_id)"
-          echo "Enqueued Treadmill job with ID $TML_JOB_ID"
+      # Pass the selected tests:
+      tests-json: ${{ (github.event_name == 'workflow_dispatch' && inputs.tests-json != '') && inputs.tests-json || needs.hwci-determine-tests.outputs.hwci-tests-json }}
 
-          # Pass the job IDs and other configuration data into the outputs of
-          # this step, such that we can run test-execute job instances for each
-          # Treadmill job we've started:
-          echo "tml-job-ids=[ \
-            \"$TML_JOB_ID\" \
-          ]" >> "$GITHUB_OUTPUT"
+    secrets: inherit
 
-          echo "tml-jobs={ \
-            \"$TML_JOB_ID\": { \
-              \"runner-id\": \"$RUNNER_ID\", \
-            } \
-          }" >> "$GITHUB_OUTPUT"
+  # We cannot depend on *all* test-execute jobs of hwci-treadmill-dispatch as
+  # required checks for pull requests and merge queues. Thus, we run another
+  # single dummy step here that waits for all the hwci-treadmill-dispatch jobs
+  # to complete and report success.
+  #
+  # We also use this to report a "dummy" success value for the "pull_request"
+  # trigger, as explained in the comment of the "on:" parameters above.
+  hwci-report-success:
+    needs: [hwci-determine-tests, hwci-treadmill-dispatch]
 
-  test-execute:
-    needs: test-prepare
+    if: always()
 
-    strategy:
-      matrix:
-        tml-job-id: ${{ fromJSON(needs.test-prepare.outputs.tml-job-ids) }}
-
-    runs-on: ${{ fromJSON(needs.test-prepare.outputs.tml-jobs)[matrix.tml-job-id].runner-id }}
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Print Treadmill Job Context and Debug Information
-        run: |
-          echo "Treadmill job id: ${{ matrix.tml-job-id }}"
-          echo "GitHub Actions Runner ID: ${{ fromJSON(needs.test-prepare.outputs.tml-jobs)[matrix.tml-job-id] }}"
-          echo "Network configration:"
-          ip address
-          echo "Attached USB devices:"
-          lsusb
-          echo "Parameters:"
-          ls /run/tml/parameters
-
-      - uses: actions/checkout@v4
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Build the Tock kernel
-        run: |
-          pushd boards/nordic/nrf52840dk
-          unset RUSTFLAGS
-          make
-          popd
-
-      # TODO: this job runs on the Treadmill host, with access to the target
-      # board. Add additional test & testing scripts.
+      - name: Fail if any of the 'hwci-treadmill-dispatch' jobs failed
+        if: github.event_name != 'pull_request' && contains(needs.*.result, 'failure')
+        run: exit 1

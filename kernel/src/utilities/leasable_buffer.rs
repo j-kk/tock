@@ -143,9 +143,8 @@
 //! will be called prior to passing the buffer down to lower layers, and
 //! `reset()` will be called once the `SubSlice` is returned via a callback.
 //!
-//!  ```rust
+//! ```rust
 //! # use kernel::utilities::leasable_buffer::SubSlice;
-//!
 //! let mut internal = ['a', 'b', 'c', 'd'];
 //! let original_base_addr = internal.as_ptr();
 //!
@@ -164,8 +163,8 @@
 //! assert_eq!((buffer[0], buffer[1]), ('a', 'b'));
 //!
 //!  ```
-//!
-//! Author: Amit Levy
+
+// Author: Amit Levy
 
 use core::ops::{Bound, Range, RangeBounds};
 use core::ops::{Index, IndexMut};
@@ -272,7 +271,7 @@ impl<'a, T> SubSliceMutImmut<'a, T> {
     }
 }
 
-impl<'a, T, I> Index<I> for SubSliceMutImmut<'a, T>
+impl<T, I> Index<I> for SubSliceMutImmut<'_, T>
 where
     I: SliceIndex<[T]>,
 {
@@ -392,7 +391,7 @@ impl<'a, T> SubSliceMut<'a, T> {
     }
 }
 
-impl<'a, T, I> Index<I> for SubSliceMut<'a, T>
+impl<T, I> Index<I> for SubSliceMut<'_, T>
 where
     I: SliceIndex<[T]>,
 {
@@ -403,7 +402,7 @@ where
     }
 }
 
-impl<'a, T, I> IndexMut<I> for SubSliceMut<'a, T>
+impl<T, I> IndexMut<I> for SubSliceMut<'_, T>
 where
     I: SliceIndex<[T]>,
 {
@@ -512,7 +511,7 @@ impl<'a, T> SubSlice<'a, T> {
     }
 }
 
-impl<'a, T, I> Index<I> for SubSlice<'a, T>
+impl<T, I> Index<I> for SubSlice<'_, T>
 where
     I: SliceIndex<[T]>,
 {
