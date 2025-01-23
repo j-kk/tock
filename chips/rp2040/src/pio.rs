@@ -13,13 +13,13 @@
 
 use core::cell::Cell;
 
-use kernel::utilities::cells::OptionalCell;
+use crate::gpio::{GpioFunction, RPGpio, RPGpioPin};
+use kernel::utilities::cells::{MapCell, OptionalCell};
+use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, register_structs, ReadOnly, ReadWrite};
 use kernel::utilities::StaticRef;
 use kernel::{debug, ErrorCode};
-
-use crate::gpio::{GpioFunction, RPGpio, RPGpioPin};
 
 const NUMBER_STATE_MACHINES: usize = 4;
 const NUMBER_INSTR_MEMORY_LOCATIONS: usize = 32;
@@ -618,18 +618,31 @@ pub enum InterruptSources {
 }
 
 pub trait PioTxClient {
-    fn on_buffer_space_available(&self);
+    fn write_complete(&self);
+
+    fn write_bulk_complete(&self, data: SubSliceMut<'static, u32>);
 }
 
 pub trait PioRxClient {
-    fn on_data_received(&self, data: u32);
+    fn read_complete(&self, data: u32);
+
+    fn read_bulk_complete(&self, data: SubSliceMut<'static, u32>);
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-enum StateMachineState {
+#[derive(Debug, Default)]
+enum StateMachineStateRx {
     #[default]
     Ready,
     Waiting,
+    WaitingBulk(SubSliceMut<'static, u32>, usize),
+}
+
+#[derive(Default)]
+enum StateMachineStateTx {
+    #[default]
+    Ready,
+    Waiting(u32),
+    WaitingBulk(SubSliceMut<'static, u32>, usize),
 }
 
 pub struct StateMachine {
@@ -637,9 +650,9 @@ pub struct StateMachine {
     registers: StaticRef<PioRegisters>,
     xor_registers: StaticRef<PioRegisters>,
     set_registers: StaticRef<PioRegisters>,
-    tx_state: Cell<StateMachineState>,
+    tx_state: MapCell<StateMachineStateTx>,
     tx_client: OptionalCell<&'static dyn PioTxClient>,
-    rx_state: Cell<StateMachineState>,
+    rx_state: MapCell<StateMachineStateRx>,
     rx_client: OptionalCell<&'static dyn PioRxClient>,
 }
 
@@ -655,9 +668,9 @@ impl StateMachine {
             registers,
             xor_registers,
             set_registers,
-            tx_state: Cell::new(StateMachineState::Ready),
+            tx_state: MapCell::new(StateMachineStateTx::Ready),
             tx_client: OptionalCell::empty(),
-            rx_state: Cell::new(StateMachineState::Ready),
+            rx_state: MapCell::new(StateMachineStateRx::Ready),
             rx_client: OptionalCell::empty(),
         }
     }
@@ -870,7 +883,7 @@ impl StateMachine {
     /// is_out
     /// => true to set the pin as OUT
     /// => false to set the pin as IN
-    pub fn set_pins_dirs(&self, mut pin: u32, mut count: u32, is_out: bool) {
+    pub fn set_pin_dirs(&self, mut pin: u32, mut count: u32, is_out: bool) {
         // "set pindirs, 0" command created by pioasm
         let set_pindirs_0: u16 = 0b1110000010000000;
         self.with_paused(|| {
@@ -1009,7 +1022,7 @@ impl StateMachine {
     ///
     /// => program: a program loaded to PIO
     /// => wrap: true to wrap the program, so it runs in loop
-    pub fn exec_program(&self, program: LoadedProgram, wrap: bool) {
+    pub fn exec_program(&self, program: &LoadedProgram, wrap: bool) {
         if wrap {
             self.set_wrap(
                 program.origin as u32,
@@ -1087,31 +1100,82 @@ impl StateMachine {
         self.set_enabled(enabled);
     }
 
+    /// Fills the TX FIFO with data from a buffer, up to the buffer's length.
+    ///
+    /// => buffer: the buffer containing data to write to the FIFO
+    /// Returns the number of words written to the FIFO.
+    fn fill_tx_buffer(&self, buffer: &[u32]) -> usize {
+        let mut total_written = 0;
+        while !self.tx_full() && total_written < buffer.len() {
+            self.registers.txf[self.sm_number as usize].set(buffer[total_written]);
+            total_written += 1;
+        }
+        total_written
+    }
+
     /// Write a word of data to a state machine’s TX FIFO.
     /// If the FIFO is full, the client will be notified when space is available.
     ///
     /// => data: the data to write to the FIFO
     pub fn push(&self, data: u32) -> Result<(), ErrorCode> {
-        match self.tx_state.get() {
-            StateMachineState::Ready => {
-                if self.tx_full() {
-                    // TX queue is full, set interrupt
-                    let field = match self.sm_number {
-                        SMNumber::SM0 => IRQ0_INTE::SM0_TXNFULL::SET,
-                        SMNumber::SM1 => IRQ0_INTE::SM1_TXNFULL::SET,
-                        SMNumber::SM2 => IRQ0_INTE::SM2_TXNFULL::SET,
-                        SMNumber::SM3 => IRQ0_INTE::SM3_TXNFULL::SET,
-                    };
-                    self.registers.irq0_inte.modify(field);
-                    self.tx_state.set(StateMachineState::Waiting);
-                    Err(ErrorCode::BUSY)
-                } else {
-                    self.registers.txf[self.sm_number as usize].set(data);
-                    Ok(())
+        self.tx_state
+            .take()
+            .map_or(Err(ErrorCode::FAIL), |state| match state {
+                StateMachineStateTx::Ready => {
+                    if self.tx_full() {
+                        // TX queue is full, set interrupt
+                        let field = match self.sm_number {
+                            SMNumber::SM0 => IRQ0_INTE::SM0_TXNFULL::SET,
+                            SMNumber::SM1 => IRQ0_INTE::SM1_TXNFULL::SET,
+                            SMNumber::SM2 => IRQ0_INTE::SM2_TXNFULL::SET,
+                            SMNumber::SM3 => IRQ0_INTE::SM3_TXNFULL::SET,
+                        };
+                        self.registers.irq0_inte.modify(field);
+                        self.tx_state.replace(StateMachineStateTx::Waiting(data));
+                        Err(ErrorCode::BUSY) // todo deferred call & status
+                    } else {
+                        // todo
+                        self.registers.txf[self.sm_number as usize].set(data);
+                        Ok(())
+                    }
                 }
-            }
-            StateMachineState::Waiting => Err(ErrorCode::BUSY),
-        }
+                StateMachineStateTx::Waiting(..) | StateMachineStateTx::WaitingBulk(..) => {
+                    Err(ErrorCode::BUSY)
+                }
+            })
+    }
+
+    /// Write a word of data to a state machine’s TX FIFO.
+    /// If the FIFO is full, the client will be notified when space is available.
+    ///
+    /// => data: the data to write to the FIFO
+    pub fn push_bulk(&self, mut buffer: SubSliceMut<'static, u32>) -> Result<(), ErrorCode> {
+        self.tx_state
+            .take()
+            .map_or(Err(ErrorCode::FAIL), |state| match state {
+                StateMachineStateTx::Ready => {
+                    let total_written = self.fill_tx_buffer(buffer.as_slice());
+                    if total_written < buffer.len() {
+                        // TX queue is full, set interrupt
+                        let field = match self.sm_number {
+                            SMNumber::SM0 => IRQ0_INTE::SM0_TXNFULL::SET,
+                            SMNumber::SM1 => IRQ0_INTE::SM1_TXNFULL::SET,
+                            SMNumber::SM2 => IRQ0_INTE::SM2_TXNFULL::SET,
+                            SMNumber::SM3 => IRQ0_INTE::SM3_TXNFULL::SET,
+                        };
+                        self.registers.irq0_inte.modify(field);
+                        self.tx_state
+                            .replace(StateMachineStateTx::WaitingBulk(buffer, total_written));
+                        Ok(()) // todo stateus
+                    } else {
+                        // todo deferred call
+                        Ok(())
+                    }
+                }
+                StateMachineStateTx::Waiting(..) | StateMachineStateTx::WaitingBulk(..) => {
+                    Err(ErrorCode::BUSY)
+                }
+            })
     }
 
     /// Wait until a state machine's TX FIFO is empty, then write a word of data to it.
@@ -1128,28 +1192,77 @@ impl StateMachine {
         Ok(())
     }
 
+    /// Fills a buffer with data from a state machine’s RX FIFO, up to the buffer’s length.
+    ///
+    /// => buffer: the buffer to fill with data
+    /// Returns the number of words read from the FIFO.
+    fn fill_rx_buffer(&self, buffer: &mut [u32]) -> usize {
+        let mut total_read = 0;
+        while !self.rx_empty() && total_read < buffer.len() {
+            buffer[total_read] = self.registers.rxf[self.sm_number as usize].read(RXFx::RXF);
+            total_read += 1;
+        }
+        total_read
+    }
+
     /// Read a word of data from a state machine’s RX FIFO.
     /// If the FIFO is empty, the client will be notified when data is available.
-    pub fn pull(&self) -> Result<u32, ErrorCode> {
-        match self.rx_state.get() {
-            StateMachineState::Ready => {
-                if self.rx_empty() {
-                    // RX queue is empty, set interrupt
-                    let field = match self.sm_number {
-                        SMNumber::SM0 => IRQ0_INTE::SM0_RXNEMPTY::SET,
-                        SMNumber::SM1 => IRQ0_INTE::SM1_RXNEMPTY::SET,
-                        SMNumber::SM2 => IRQ0_INTE::SM2_RXNEMPTY::SET,
-                        SMNumber::SM3 => IRQ0_INTE::SM3_RXNEMPTY::SET,
-                    };
-                    self.registers.irq0_inte.modify(field);
-                    self.rx_state.set(StateMachineState::Waiting);
-                    Err(ErrorCode::BUSY)
-                } else {
-                    Ok(self.registers.rxf[self.sm_number as usize].read(RXFx::RXF))
+    pub fn pull(&self) -> Result<(), ErrorCode> {
+        self.rx_state
+            .take()
+            .map_or(Err(ErrorCode::FAIL), |state| match state {
+                StateMachineStateRx::Ready => {
+                    if self.rx_empty() {
+                        // RX queue is empty, set interrupt
+                        let field = match self.sm_number {
+                            SMNumber::SM0 => IRQ0_INTE::SM0_RXNEMPTY::SET,
+                            SMNumber::SM1 => IRQ0_INTE::SM1_RXNEMPTY::SET,
+                            SMNumber::SM2 => IRQ0_INTE::SM2_RXNEMPTY::SET,
+                            SMNumber::SM3 => IRQ0_INTE::SM3_RXNEMPTY::SET,
+                        };
+                        self.registers.irq0_inte.modify(field);
+                        self.rx_state.replace(StateMachineStateRx::Waiting);
+                        Err(ErrorCode::BUSY)
+                    } else {
+                        // todo deferred call
+                        Ok(())
+                    }
                 }
-            }
-            StateMachineState::Waiting => Err(ErrorCode::BUSY),
-        }
+                StateMachineStateRx::Waiting | StateMachineStateRx::WaitingBulk(..) => {
+                    Err(ErrorCode::BUSY)
+                }
+            })
+    }
+
+    /// Read a word of data from a state machine’s RX FIFO.
+    /// If the FIFO is empty, the client will be notified when data is available.
+    pub fn pull_bulk(&self, mut buffer: SubSliceMut<'static, u32>) -> Result<(), ErrorCode> {
+        self.rx_state
+            .take()
+            .map_or(Err(ErrorCode::FAIL), |state| match state {
+                StateMachineStateRx::Ready => {
+                    let total_read = self.fill_rx_buffer(buffer.as_slice());
+                    if total_read < buffer.len() {
+                        // RX queue is empty, set interrupt
+                        let field = match self.sm_number {
+                            SMNumber::SM0 => IRQ0_INTE::SM0_RXNEMPTY::SET,
+                            SMNumber::SM1 => IRQ0_INTE::SM1_RXNEMPTY::SET,
+                            SMNumber::SM2 => IRQ0_INTE::SM2_RXNEMPTY::SET,
+                            SMNumber::SM3 => IRQ0_INTE::SM3_RXNEMPTY::SET,
+                        };
+                        self.registers.irq0_inte.modify(field);
+                        self.rx_state
+                            .replace(StateMachineStateRx::WaitingBulk(buffer, total_read));
+                        Err(ErrorCode::BUSY)
+                    } else {
+                        // todo deferred call
+                        Ok(())
+                    }
+                }
+                StateMachineStateRx::Waiting | StateMachineStateRx::WaitingBulk(..) => {
+                    Err(ErrorCode::BUSY)
+                }
+            })
     }
 
     /// Reads a word of data from a state machine’s RX FIFO.
@@ -1165,9 +1278,8 @@ impl StateMachine {
 
     /// Handle a TX interrupt - notify that buffer space is available.
     fn handle_tx_interrupt(&self) {
-        match self.tx_state.get() {
-            StateMachineState::Waiting => {
-                // TX queue has emptied, clear interrupt
+        self.tx_state.take().map(|state| match state {
+            StateMachineStateTx::Waiting(data) => {
                 let field = match self.sm_number {
                     SMNumber::SM0 => IRQ0_INTE::SM0_TXNFULL::CLEAR,
                     SMNumber::SM1 => IRQ0_INTE::SM1_TXNFULL::CLEAR,
@@ -1175,20 +1287,37 @@ impl StateMachine {
                     SMNumber::SM3 => IRQ0_INTE::SM3_TXNFULL::CLEAR,
                 };
                 self.registers.irq0_inte.modify(field);
-                self.tx_state.set(StateMachineState::Ready);
+                self.registers.txf[self.sm_number as usize].set(data);
+                self.tx_state.replace(StateMachineStateTx::Ready);
                 self.tx_client.map(|client| {
-                    client.on_buffer_space_available();
+                    client.write_complete();
                 });
             }
-            StateMachineState::Ready => {}
-        }
+            StateMachineStateTx::WaitingBulk(buffer, total_written) => {
+                let total_written = total_written + self.fill_tx_buffer(&buffer[total_written..]);
+                if total_written == buffer.len() {
+                    // TX queue has emptied, clear interrupt
+                    let field = match self.sm_number {
+                        SMNumber::SM0 => IRQ0_INTE::SM0_TXNFULL::CLEAR,
+                        SMNumber::SM1 => IRQ0_INTE::SM1_TXNFULL::CLEAR,
+                        SMNumber::SM2 => IRQ0_INTE::SM2_TXNFULL::CLEAR,
+                        SMNumber::SM3 => IRQ0_INTE::SM3_TXNFULL::CLEAR,
+                    };
+                    self.registers.irq0_inte.modify(field);
+                    self.tx_state.replace(StateMachineStateTx::Ready);
+                    self.tx_client.map(|client| {
+                        client.write_bulk_complete(buffer);
+                    });
+                }
+            }
+            StateMachineStateTx::Ready => {}
+        });
     }
 
     /// Handle an RX interrupt - notify that data has been received.
     fn handle_rx_interrupt(&self) {
-        match self.rx_state.get() {
-            StateMachineState::Waiting => {
-                // RX queue has data, clear interrupt
+        self.rx_state.take().map(|state| match state {
+            StateMachineStateRx::Waiting => {
                 let field = match self.sm_number {
                     SMNumber::SM0 => IRQ0_INTE::SM0_RXNEMPTY::CLEAR,
                     SMNumber::SM1 => IRQ0_INTE::SM1_RXNEMPTY::CLEAR,
@@ -1196,15 +1325,31 @@ impl StateMachine {
                     SMNumber::SM3 => IRQ0_INTE::SM3_RXNEMPTY::CLEAR,
                 };
                 self.registers.irq0_inte.modify(field);
-                self.rx_state.set(StateMachineState::Ready);
+                self.rx_state.replace(StateMachineStateRx::Ready);
                 self.rx_client.map(|client| {
-                    client.on_data_received(
-                        self.registers.rxf[self.sm_number as usize].read(RXFx::RXF),
-                    );
+                    let data = self.registers.rxf[self.sm_number as usize].read(RXFx::RXF);
+                    client.read_complete(data);
                 });
             }
-            StateMachineState::Ready => {}
-        }
+            StateMachineStateRx::WaitingBulk(mut buffer, total_read) => {
+                let total_read = total_read + self.fill_rx_buffer(&mut buffer[total_read..]);
+                if total_read == buffer.len() {
+                    // RX queue has data, clear interrupt
+                    let field = match self.sm_number {
+                        SMNumber::SM0 => IRQ0_INTE::SM0_RXNEMPTY::CLEAR,
+                        SMNumber::SM1 => IRQ0_INTE::SM1_RXNEMPTY::CLEAR,
+                        SMNumber::SM2 => IRQ0_INTE::SM2_RXNEMPTY::CLEAR,
+                        SMNumber::SM3 => IRQ0_INTE::SM3_RXNEMPTY::CLEAR,
+                    };
+                    self.registers.irq0_inte.modify(field);
+                    self.rx_state.replace(StateMachineStateRx::Ready);
+                    self.rx_client.map(|client| {
+                        client.read_bulk_complete(buffer);
+                    });
+                }
+            }
+            StateMachineStateRx::Ready => {}
+        });
     }
 }
 
@@ -1294,6 +1439,15 @@ impl Pio {
         } else {
             pin.set_function(GpioFunction::PIO0)
         }
+    }
+
+    pub fn set_input_sync_bypass(&self, pin: &RPGpioPin, bypass: bool) {
+        let value = self.registers.input_sync_bypass.get();
+        let mask: u32 = 1 << pin.pin();
+        self.registers.input_sync_bypass.set(match bypass {
+            true => value | mask,
+            false => value & !mask,
+        });
     }
 
     /// Create a new PIO0 struct.
@@ -1655,7 +1809,7 @@ mod examples {
             sm.config(config);
             self.gpio_init(&RPGpioPin::new(RPGpio::from_u32(pin)));
             sm.set_enabled(false);
-            sm.set_pins_dirs(pin, 1, true);
+            sm.set_pin_dirs(pin, 1, true);
             sm.set_set_pins(pin, 1);
             sm.init();
             sm.set_enabled(true);
@@ -1671,7 +1825,7 @@ mod examples {
             sm.config(config);
             self.gpio_init(&RPGpioPin::new(RPGpio::from_u32(pin)));
             sm.set_enabled(false);
-            sm.set_pins_dirs(pin, 1, true);
+            sm.set_pin_dirs(pin, 1, true);
             sm.set_set_pins(pin, 1);
             sm.init();
             sm.set_enabled(true);
@@ -1688,8 +1842,8 @@ mod examples {
             self.gpio_init(&RPGpioPin::new(RPGpio::from_u32(pin)));
             self.gpio_init(&RPGpioPin::new(RPGpio::GPIO7));
             sm.set_enabled(false);
-            sm.set_pins_dirs(pin, 1, true);
-            sm.set_pins_dirs(7, 1, true);
+            sm.set_pin_dirs(pin, 1, true);
+            sm.set_pin_dirs(7, 1, true);
             sm.set_set_pins(pin, 1);
             sm.set_side_set_pins(7, 1, false, true);
             sm.init();
@@ -1710,8 +1864,8 @@ mod examples {
             self.gpio_init(&RPGpioPin::new(RPGpio::from_u32(pin1)));
             self.gpio_init(&RPGpioPin::new(RPGpio::from_u32(pin2)));
             sm.set_enabled(false);
-            sm.set_pins_dirs(pin1, 1, true);
-            sm.set_pins_dirs(pin2, 1, true);
+            sm.set_pin_dirs(pin1, 1, true);
+            sm.set_pin_dirs(pin2, 1, true);
             sm.init();
             sm.set_enabled(true);
             sm.push_blocking(turn_on_gpio_6_7).ok();
@@ -1733,7 +1887,7 @@ mod examples {
             sm.config(config);
             self.gpio_init(&RPGpioPin::new(RPGpio::from_u32(pin)));
             sm.set_enabled(false);
-            sm.set_pins_dirs(pin, 1, true);
+            sm.set_pin_dirs(pin, 1, true);
             sm.set_side_set_pins(pin, 1, false, true);
             sm.init();
             sm.push_blocking(pwm_period).ok();

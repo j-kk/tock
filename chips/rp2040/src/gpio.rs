@@ -218,7 +218,12 @@ register_bitfields![u32,
     GPIO_PAD [
         OD OFFSET(7) NUMBITS(1) [],
         IE OFFSET(6) NUMBITS(1) [],
-        DRIVE OFFSET(4) NUMBITS(2) [],
+        DRIVE OFFSET(4) NUMBITS(2) [
+            _2mA = 0,
+            _4mA = 1,
+            _8mA = 2,
+            _12mA = 3,
+        ],
         PUE OFFSET(3) NUMBITS(1) [],
         PDE OFFSET(2) NUMBITS(1) [],
         SCHMITT OFFSET(1) NUMBITS(1) [],
@@ -391,6 +396,19 @@ enum_from_primitive! {
     }
 }
 
+enum_from_primitive! {
+    #[derive(Copy, Clone, PartialEq)]
+    #[repr(u32)]
+    #[rustfmt::skip]
+
+    pub enum DriveStrength {
+        _2mA = 0,
+        _4mA = 1,
+        _8mA = 2,
+        _12mA = 3,
+    }
+}
+
 pub struct RPGpioPin<'a> {
     pin: usize,
     client: OptionalCell<&'a dyn hil::gpio::Client>,
@@ -463,6 +481,32 @@ impl<'a> RPGpioPin<'a> {
 
     pub fn handle_interrupt(&self) {
         self.client.map(|client| client.fired());
+    }
+
+    pub fn set_schmitt(&self, enable: bool) {
+        if enable {
+            self.gpio_pad_registers.gpio_pad[self.pin].modify(GPIO_PAD::SCHMITT::SET);
+        } else {
+            self.gpio_pad_registers.gpio_pad[self.pin].modify(GPIO_PAD::SCHMITT::CLEAR);
+        }
+    }
+
+    pub fn set_drive_strength(&self, drive_strength: DriveStrength) {
+        let field_value = match drive_strength {
+            DriveStrength::_2mA => GPIO_PAD::DRIVE::_2mA,
+            DriveStrength::_4mA => GPIO_PAD::DRIVE::_4mA,
+            DriveStrength::_8mA => GPIO_PAD::DRIVE::_8mA,
+            DriveStrength::_12mA => GPIO_PAD::DRIVE::_12mA,
+        };
+        self.gpio_pad_registers.gpio_pad[self.pin].modify(field_value);
+    }
+
+    pub fn set_slew_rate(&self, fast: bool) {
+        if fast {
+            self.gpio_pad_registers.gpio_pad[self.pin].modify(GPIO_PAD::SLEWFAST::SET);
+        } else {
+            self.gpio_pad_registers.gpio_pad[self.pin].modify(GPIO_PAD::SLEWFAST::CLEAR);
+        }
     }
 
     // needed for usb errata https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf#RP2040-E5
